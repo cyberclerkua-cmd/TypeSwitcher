@@ -1,0 +1,28 @@
+# Сборка
+bin/
+obj/
+dist/
+*.user
+*.suo
+.vs/
+
+# Данные пользователя (портабл: data/ рядом с exe) и отладка
+data/
+*.log
+debug.on
+TestResults/
+artifacts/
+
+# Сторонние репозитории-референсы и локальные заметки инструментов
+repos/
+.claude/
+
+# Внутренние документы разработки (не для публикации)
+CLAUDE.md
+tz.md
+LINUX_PORT.md
+CHANGELOG.md
+docs/BASELINE.md
+docs/WORKLOG.md
+docs/QA-*.md
+docs/branding/

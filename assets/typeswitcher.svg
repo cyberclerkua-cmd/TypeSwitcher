@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="TypeSwitcher">
+  <defs><linearGradient id="graphite" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#293D59"/><stop offset="1" stop-color="#101A2C"/></linearGradient></defs>
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#graphite)"/>
+  <rect x="17" y="17" width="222" height="222" rx="51" fill="none" stroke="#8CACDB" stroke-opacity=".22" stroke-width="2"/>
+  <path d="M67 91H190M166 67L190 91L166 115" fill="none" stroke="#FFFFFF" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M189 165H66M90 141L66 165L90 189" fill="none" stroke="#5BD6FF" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

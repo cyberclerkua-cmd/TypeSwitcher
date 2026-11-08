@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0-windows7.0": {
+      "Hardcodet.NotifyIcon.Wpf": {
+        "type": "Transitive",
+        "resolved": "2.0.1",
+        "contentHash": "dtxmeZXzV2GzSm91aZ3hqzgoeVoARSkDPVCYfhVUNyyKBWYxMgNC0EcLiSYxD4Uc4alq/2qb3SmV8DgAENLRLQ=="
+      },
+      "WeCantSpell.Hunspell": {
+        "type": "Transitive",
+        "resolved": "7.0.1",
+        "contentHash": "Ha0x66QWA+IPj2kJYoweA8MSnB1tymBW6kAIS6Kkj/U3SlMLCBPjDlUXzrrY1zJAxVItrGpFIXjkl3eEIYIE9A=="
+      },
+      "typeswitcher": {
+        "type": "Project",
+        "dependencies": {
+          "Hardcodet.NotifyIcon.Wpf": "[2.0.1, )",
+          "WeCantSpell.Hunspell": "[7.0.1, )"
+        }
+      }
+    }
+  }
+}

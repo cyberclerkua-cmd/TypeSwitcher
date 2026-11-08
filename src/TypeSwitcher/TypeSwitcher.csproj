@@ -1,0 +1,98 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>TypeSwitcher</AssemblyName>
+    <RootNamespace>TypeSwitcher</RootNamespace>
+    <Product>TypeSwitcher</Product>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\typeswitcher.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Version>2.0.0</Version>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- Keep the implicit ILLink dependency identical for normal restore and single-file publish. -->
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <Authors>TypeSwitcher</Authors>
+    <Description>Фоновый автокорректор опечаток и раскладки ru/en/uk для Windows</Description>
+  </PropertyGroup>
+
+  <!-- Портабл-релиз: параметры публикации живут здесь, а не в командной строке, чтобы
+       'dotnet publish -c Release -o dist/TypeSwitcher' собирал одно и то же везде.
+       _IsPublishing выставляет сам 'dotnet publish' (SDK 8+), поэтому обычные
+       build/run остаются framework-dependent и быстрыми.
+       Нативные dll НЕ упаковываем в exe (IncludeNativeLibrariesForSelfExtract): при
+       самораспаковке они живут в %TEMP%\.net\TypeSwitcher\..., чистильщики TEMP их сносят,
+       и WPF (DirectWriteForwarder, C++/CLI) падал с DllNotFoundException при выходе -
+       см. журнал приложений. Рядом с exe остаётся несколько *_cor3.dll - это нормально. -->
+  <PropertyGroup Condition="'$(_IsPublishing)' == 'true'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Localization\*.json" />
+    <Content Include="..\..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\README.md" Link="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\docs\**\*.md" Link="docs\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\docs\**\*.png" Link="docs\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <PackageReference Include="WeCantSpell.Hunspell" Version="7.0.1" />
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ассеты рядом с exe (иконки трея, звуки). typeswitcher.ico нужен только для иконки
+         самого exe (ApplicationIcon) — рядом с релизом он не нужен, не копируем. -->
+    <Content Include="..\..\assets\**" Exclude="..\..\assets\*.ico;..\..\assets\icon_blue.png;..\..\assets\icon_red.png">
+      <Link>assets\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- Словари Hunspell и частотный список — плоско в dict\ рядом с exe.
+         Перечислены явно: glob 'dict\**' с подпапкой hunspell\ + <Link>-сплющивание
+         при single-file publish нестабильно терял крупные файлы (ru_RU.dic, ru-300k.txt). -->
+    <Content Include="..\..\dict\hunspell\ru_RU.dic" Link="dict\ru_RU.dic" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\ru_RU.aff" Link="dict\ru_RU.aff" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\ru_RU.LICENSE" Link="dict\ru_RU.LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\en_US.dic" Link="dict\en_US.dic" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\en_US.aff" Link="dict\en_US.aff" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\en_US.LICENSE" Link="dict\en_US.LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\uk_UA.dic" Link="dict\uk_UA.dic" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\uk_UA.aff" Link="dict\uk_UA.aff" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\hunspell\uk_UA.LICENSE" Link="dict\uk_UA.LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\uk-50k.txt" Link="dict\uk-50k.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\SOURCES.md" Link="dict\SOURCES.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\ru-300k.txt" Link="dict\ru-300k.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\ru_extra.txt" Link="dict\ru_extra.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\ru_extra.dic" Link="dict\ru_extra.dic" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\dict\en_extra.txt" Link="dict\en_extra.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- PublishSingleFile детерминированно теряет крупные loose-файлы контента
+       (ru_RU.dic ~3.4 МБ, ru-300k.txt ~6 МБ): в exe не бандлятся и в publish-папку
+       не кладутся. Докопируем словари в publish-каталог напрямую после публикации. -->
+  <Target Name="CopyDictsToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_PublishDicts Include="..\..\dict\hunspell\*" />
+      <_PublishDicts Include="..\..\dict\ru-300k.txt" />
+      <_PublishDicts Include="..\..\dict\ru_extra.txt" />
+      <_PublishDicts Include="..\..\dict\ru_extra.dic" />
+      <_PublishDicts Include="..\..\dict\en_extra.txt" />
+      <_PublishDicts Include="..\..\dict\uk-50k.txt" />
+      <_PublishDicts Include="..\..\dict\SOURCES.md" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_PublishDicts)" DestinationFolder="$(PublishDir)dict" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

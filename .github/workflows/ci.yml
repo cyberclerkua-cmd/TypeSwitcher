@@ -1,0 +1,38 @@
+name: Windows build and tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+      - name: Restore locked dependencies
+        run: dotnet restore TypeSwitcher.sln --locked-mode
+      - name: Build
+        run: dotnet build TypeSwitcher.sln -c Release --no-restore -warnaserror
+      - name: Tests
+        run: dotnet test TypeSwitcher.sln -c Release --no-build --logger trx --results-directory artifacts/TestResults --collect:"XPlat Code Coverage"
+      - name: Publish self-contained application
+        run: dotnet publish src/TypeSwitcher/TypeSwitcher.csproj -c Release -o dist/TypeSwitcher -p:RestoreLockedMode=true
+      - name: Verify relocated package
+        shell: pwsh
+        run: ./tools/verify-package.ps1 -Directory ./dist/TypeSwitcher -Reports ./artifacts/reports
+      - name: Build portable archive
+        shell: pwsh
+        run: ./tools/package.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: TypeSwitcher-windows
+          path: artifacts/
