@@ -13,6 +13,7 @@ namespace TypeSwitcher.Tray;
 
 internal static class UiPreferences
 {
+    public static bool CapturingHotkey { get; set; }
     private static ConfigStore? _store;
     private static AppConfig? _config;
     public static IReadOnlyList<UiChoice> Languages { get; } =

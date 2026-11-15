@@ -5,6 +5,8 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using System.Windows.Controls;
 using System.Windows.Interop;
+using System.Windows.Automation;
+using System.Windows.Documents;
 using TypeSwitcher.Interop;
 using TypeSwitcher.Localization;
 using TypeSwitcher.Config;
@@ -36,11 +38,23 @@ public sealed class UiSmokeTests
                 var cfg = store.Load();
                 store.EnsureUserLists();
                 var settings = new SettingsWindow(store, cfg, () => { });
-                for (int page = 0; page < 8; page++)
+                Assert.Equal(12, settings.PageCount);
+                for (int page = 0; page < settings.PageCount; page++)
                 {
                     settings.SelectPage(page);
                     Layout(settings);
                 }
+                settings.SelectPage(1); Layout(settings);
+                var english = Visuals((DependencyObject)settings.Content).OfType<CheckBox>().Single(c => AutomationProperties.GetName(c) == "Исправлять английские опечатки");
+                english.IsChecked = true;
+                Assert.True(settings.ReadFormConfiguration().Typo.EnglishEnabled);
+                var resetEnglish = Visuals((DependencyObject)settings.Content).OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "reset.typo.english");
+                Assert.True(resetEnglish.IsEnabled);
+                resetEnglish.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.False(settings.ReadFormConfiguration().Typo.EnglishEnabled);
+                settings.SelectPage(SettingsWindow.AboutPage); Layout(settings);
+                var github = Visuals((DependencyObject)settings.Content).OfType<TextBlock>().SelectMany(t => t.Inlines.OfType<Hyperlink>()).Single();
+                Assert.Equal(SettingsWindow.GitHubUrl, github.NavigateUri.AbsoluteUri);
                 var library = new DictionaryLibraryWindow(store, cfg, () => { });
                 Layout(library);
                 var suggestion = new SuggestionWindow("привт", LayoutTarget.Uk, [LayoutTarget.En, LayoutTarget.Ru, LayoutTarget.Uk]);
@@ -66,7 +80,7 @@ public sealed class UiSmokeTests
                         Assert.Equal(Theme.Palette(dark)["WinBg"], Assert.IsType<SolidColorBrush>(settings.Background).Color);
                         Assert.Equal(Theme.Palette(dark)["WinBg"], Assert.IsType<SolidColorBrush>(library.Background).Color);
                         Assert.Equal(Theme.Palette(dark)["WinBg"], Assert.IsType<SolidColorBrush>(suggestion.Background).Color);
-                        for (int page = 0; page < 8; page++) { settings.SelectPage(page); Layout(settings); }
+                        for (int page = 0; page < settings.PageCount; page++) { settings.SelectPage(page); Layout(settings); }
                         Layout(library); Layout(suggestion); Layout(rule);
                         var saved = store.Load();
                         Assert.Equal(language, saved.General.Language);
@@ -74,7 +88,7 @@ public sealed class UiSmokeTests
                         Assert.Single(themeMenu.Items.Cast<MenuItem>(), item => item.IsChecked);
                     }
                 }
-                Assert.Empty(L.MissingKeys);
+                Assert.True(L.MissingKeys.Count == 0, string.Join("\n", L.MissingKeys.Order(StringComparer.Ordinal)));
                 var oldReader = Theme.SystemThemeReader;
                 try
                 {
@@ -127,5 +141,12 @@ public sealed class UiSmokeTests
         var frame = new DispatcherFrame();
         Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.ContextIdle, new Action(() => frame.Continue = false));
         Dispatcher.PushFrame(frame);
+    }
+
+    private static IEnumerable<DependencyObject> Visuals(DependencyObject root)
+    {
+        yield return root;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            foreach (var child in Visuals(VisualTreeHelper.GetChild(root, i))) yield return child;
     }
 }

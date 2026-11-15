@@ -81,16 +81,17 @@ public sealed class ConfigStore
             string json = File.ReadAllText(ConfigPath);
             using var document = JsonDocument.Parse(json);
             int version = document.RootElement.TryGetProperty("schema_version", out var v) ? v.GetInt32() : 1;
-            if (version > 2) throw new JsonException(L.T("Версия настроек {0} новее поддерживаемой (2)", version));
+            if (version > AppConfig.CurrentSchemaVersion) throw new JsonException(L.T("Версия настроек {0} новее поддерживаемой ({1})", version, AppConfig.CurrentSchemaVersion));
             var cfg = JsonSerializer.Deserialize<AppConfig>(json, JsonOpts)
                       ?? throw new JsonException(L.T("config.json пуст (null)"));
             cfg.Normalize();
-            if (version < 2)
+            if (version < AppConfig.CurrentSchemaVersion)
             {
-                string backup = ConfigPath + ".v1.bak";
+                if (!document.RootElement.TryGetProperty("hotkeys", out _)) cfg.Hotkeys = HotkeysConfig.FromLegacy(cfg);
+                string backup = ConfigPath + $".v{version}.bak";
                 if (!File.Exists(backup)) File.Copy(ConfigPath, backup);
-                cfg.SchemaVersion = 2;
             }
+            cfg.Normalize();
             return cfg;
         }
         catch (Exception ex)

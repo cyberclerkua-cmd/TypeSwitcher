@@ -20,7 +20,7 @@ namespace TypeSwitcher.Tray;
 /// поля, скроллбары) - в DarkTheme.xaml. Сохранение пишет config.json и пользовательские
 /// списки, затем вызывает onSaved для применения на лету.
 /// </summary>
-public sealed class SettingsWindow : Window
+public sealed partial class SettingsWindow : Window
 {
     private readonly ConfigStore _store;
     private readonly AppConfig _cfg;
@@ -31,9 +31,6 @@ public sealed class SettingsWindow : Window
     private CheckBox _beepTypo = null!, _beepLayout = null!;
     private CheckBox _suggestEnabled = null!;
     private TextBox _threshold = null!;
-    private TextBox _hotkeyBox = null!, _suggestBox = null!, _caseBox = null!;
-    private int _hotkeyVk, _suggestVk, _caseVk;
-    private bool _caseShift;
     private CheckBox _twoCaps = null!;
 
     private CheckBox _typoEnabled = null!;
@@ -68,10 +65,7 @@ public sealed class SettingsWindow : Window
         foreach (string scope in Scopes)
             foreach (string kind in new[] { "my_words", "stopwords", "rules" })
                 _userTexts[(kind, scope)] = ReadFile(store.UserListPath(kind, scope));
-        _hotkeyVk = cfg.Layout.HotkeyUndoVk;
-        _suggestVk = cfg.Layout.HotkeySuggestVk;
-        _caseVk = cfg.Case.HotkeyVk;
-        _caseShift = cfg.Case.HotkeyShift;
+        InitializeFeatureState();
 
         Title = "TypeSwitcher";
         Width = Math.Max(cfg.Ui.SettingsWidth, 760);
@@ -100,7 +94,7 @@ public sealed class SettingsWindow : Window
             Foreground = Theme.Fg,
             Margin = new Thickness(12, 4, 0, 20)
         });
-        var navBorder = new Border { Background = Theme.NavBg, Child = _nav };
+        var navBorder = new Border { Background = Theme.NavBg, Child = new ScrollViewer { Content = _nav, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false } };
         Grid.SetColumn(navBorder, 0);
         root.Children.Add(navBorder);
 
@@ -144,12 +138,19 @@ public sealed class SettingsWindow : Window
         AddPage("Правила", BuildRules(), scroll: false);
         AddPage("Исключения", BuildExclusions(), scroll: false);
         AddPage("Язык интерфейса", BuildInterfaceLanguage(), scroll: true);
+        AddPage("Правила раскладки", BuildLayoutRules(), scroll: true);
+        AddPage("Проверка", BuildDiagnostics(), scroll: true);
+        AddPage("История", BuildHistory(), scroll: false);
+        AddPage("О программе", BuildAbout(), scroll: true);
+        InstallDefaultTracking();
 
         Content = root;
         _pages.Keys.First().IsChecked = true;
 
         Closing += (_, _) =>
         {
+            UiPreferences.CapturingHotkey = false;
+            _diagnosticCancellation?.Cancel();
             // Запомнить размер окна (без сохранения остальных правок формы).
             if (WindowState == WindowState.Normal)
             {
@@ -190,6 +191,9 @@ public sealed class SettingsWindow : Window
         if (index < 0 || index >= _pages.Count) return;
         _pages.Keys.ElementAt(index).IsChecked = true;
     }
+    public int PageCount => _pages.Count;
+    public const int AboutPage = 11;
+    internal void SetEngineEnabled(bool value) => _enabled.IsChecked = value;
 
     private void ShowPage(RadioButton item)
     {
@@ -211,14 +215,8 @@ public sealed class SettingsWindow : Window
             "Автозапуск через реестр текущего пользователя, без прав администратора. При переносе папки включите заново.");
 
         var keys = Card(p, "Горячие клавиши");
-        _hotkeyBox = HotkeyRow(keys, "Откат правки / смена раскладки", _hotkeyVk, false, false, (v, _) => _hotkeyVk = v,
-            "Если слово только что исправлено, клавиша возвращает исходный вариант (и обратно). " +
-            "Иначе переключает раскладку набираемого или последнего слова: буквы и знаки, хоть один символ.");
-        _suggestBox = HotkeyRow(keys, "Окно слова", _suggestVk, false, false, (v, _) => _suggestVk = v,
-            "Открывает для последнего слова окно действий: не трогать, правило, смена раскладки.");
-        _caseBox = HotkeyRow(keys, "Смена регистра", _caseVk, _caseShift, true, (v, sh) => { _caseVk = v; _caseShift = sh; },
-            "Меняет регистр набираемого или последнего слова по кругу: строчные, ПРОПИСНЫЕ, Первая прописная. " +
-            "Можно назначить клавишу вместе с Shift.");
+        BuildHotkeys(keys);
+        BuildSelectionPreferences(p);
 
         var sound = Card(p, "Звук");
         _beepTypo = Toggle(sound, "Сигнал при исправлении опечатки", _cfg.Sound.BeepOnTypo, "");
@@ -231,6 +229,8 @@ public sealed class SettingsWindow : Window
         _learnLog = Toggle(learn, "Копить локальный лог правок", _cfg.Learning.Enabled,
             "В data/corrections.jsonl пишутся только события автозамены и откатов, без потока набора, паролей и содержимого окон. " +
             "Помогает настраивать качество на реальных данных. Никуда не отправляется.");
+        _historyLimit = Number(learn, "Лимит записей истории", _cfg.Learning.MaxEntries.ToString(), "Хранятся только последние исправления. Запись истории включается отдельно.");
+        _layoutIndicator = Toggle(main, "Показывать раскладку в трее", _cfg.Tray.ShowLayoutIndicator, "Индикатор EN/RU/UK отражает язык ввода активного окна.");
         return p;
     }
 
@@ -241,6 +241,7 @@ public sealed class SettingsWindow : Window
         var main = Card(p, "Исправление");
         _typoEnabled = Toggle(main, "Исправлять опечатки", _cfg.Typo.Enabled,
             "Слово, которого нет в словаре, заменяется ближайшим словарным, если выбор однозначен. Существующие слова не трогаются.");
+        _englishEnabled = Toggle(main, "Исправлять английские опечатки", _cfg.Typo.EnglishEnabled, "Отдельная опция для английского текста. Идентификаторы и технические термины защищены.");
         _minWordLen = Number(main, "Минимальная длина слова", _cfg.Typo.MinWordLength.ToString(),
             "Более короткие слова не исправляются: слишком велик риск ошибиться.");
         _twoCaps = Toggle(main, "Исправлять ДВе заглавные", _cfg.Case.FixTwoCapitals,
@@ -291,6 +292,7 @@ public sealed class SettingsWindow : Window
             "Токены вида имя.ext с известным доменом или расширением (пщщпдуюсщь в google.com, куфвьуюьв в readme.md).");
         _protectTech = Toggle(extra, "Не трогать технические токены", _cfg.Layout.ProtectTechnical,
             "Аббревиатуры (USB, API), бренды с заглавными внутри (GitHub, iPhone) и слова с цифрами (win10) не перекладываются, даже если похожи на слово другой раскладки.");
+        BuildAutomationPreferences(p);
         return p;
     }
 
@@ -371,6 +373,7 @@ public sealed class SettingsWindow : Window
         var h = EditorHeader("Чёрный список приложений",
             "В этих приложениях программа полностью бездействует. Имя процесса по одному на строку, например chrome.exe. Для терминала Windows это WindowsTerminal.exe.");
         h.Margin = new Thickness(0, 20, 0, 8);
+        h.Children.Add(BuildExclusionButtons());
         Add(g, 1, h);
         _blacklist = Editor(string.Join("\n", _cfg.Exclusions.AppBlacklist));
         L.Bind(_blacklist, AutomationProperties.NameProperty, "Чёрный список приложений");
@@ -411,53 +414,66 @@ public sealed class SettingsWindow : Window
         return bar;
     }
 
-    private void Save()
+    internal AppConfig ReadFormConfiguration()
     {
+        var config = ConfigStore.Clone(_cfg);
         var order = _languageOrder.Text.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(s => s.ToLowerInvariant()).Distinct().ToList();
         if (order.Count == 0 || order.Any(id => LanguageProfile.Find(id) == null))
             throw new InvalidDataException(L.T("Порядок языков: en, ru, uk (через запятую)."));
-        _cfg.Languages.Order = order;
-        _cfg.Languages.Enabled = _languageChecks.Where(p => p.Value.IsChecked == true).Select(p => p.Key).ToList();
-        _cfg.General.Enabled = _enabled.IsChecked == true;
-        _cfg.General.Autostart = _autostart.IsChecked == true;
-        _cfg.Learning.Enabled = _learnLog.IsChecked == true;
-        _cfg.Sound.BeepOnTypo = _beepTypo.IsChecked == true;
-        _cfg.Sound.BeepOnLayout = _beepLayout.IsChecked == true;
-        _cfg.Suggestions.Enabled = _suggestEnabled.IsChecked == true;
-        _cfg.Suggestions.Threshold = ParseInt(_threshold.Text, _cfg.Suggestions.Threshold);
-        _cfg.Layout.HotkeyUndoVk = _hotkeyVk;
-        _cfg.Layout.HotkeySuggestVk = _suggestVk;
-        _cfg.Case.HotkeyVk = _caseVk;
-        _cfg.Case.HotkeyShift = _caseShift;
-        _cfg.Case.FixTwoCapitals = _twoCaps.IsChecked == true;
+        config.Languages.Order = order;
+        config.Languages.Enabled = _languageChecks.Where(p => p.Value.IsChecked == true).Select(p => p.Key).ToList();
+        config.General.Enabled = _enabled.IsChecked == true;
+        config.General.Autostart = _autostart.IsChecked == true;
+        config.Learning.Enabled = _learnLog.IsChecked == true;
+        config.Sound.BeepOnTypo = _beepTypo.IsChecked == true;
+        config.Sound.BeepOnLayout = _beepLayout.IsChecked == true;
+        config.Suggestions.Enabled = _suggestEnabled.IsChecked == true;
+        config.Suggestions.Threshold = ParseInt(_threshold.Text, _cfg.Suggestions.Threshold);
+        config.Hotkeys = _draftHotkeys;
+        if (config.Hotkeys.HasConflicts()) throw new InvalidDataException(L.T("Одно сочетание назначено нескольким командам."));
+        config.Layout.HotkeyUndoVk = _draftHotkeys.ConvertWord.Vk;
+        config.Layout.HotkeySuggestVk = _draftHotkeys.WordActions.Vk;
+        config.Case.HotkeyVk = _draftHotkeys.ChangeCase.Vk;
+        config.Case.HotkeyShift = _draftHotkeys.ChangeCase.Modifiers.HasFlag(KeyModifiers.Shift);
+        config.Case.FixTwoCapitals = _twoCaps.IsChecked == true;
 
-        _cfg.Typo.Enabled = _typoEnabled.IsChecked == true;
-        _cfg.Typo.MaxEditDistance = _ed2.IsChecked == true ? 2 : 1;
-        _cfg.Typo.MinWordLength = ParseInt(_minWordLen.Text, _cfg.Typo.MinWordLength);
-        _cfg.Ngram.Enabled = _ngramEnabled.IsChecked == true;
-        _cfg.Ngram.WeightByFrequency = _ngramFreq.IsChecked == true;
-        _cfg.Typo.ScoreGap = ParseDouble(_scoreGap.Text, _cfg.Typo.ScoreGap);
-        _cfg.Typo.DominanceRatio = ParseDouble(_dominance.Text, _cfg.Typo.DominanceRatio);
-        _cfg.Typo.MinFrequency = ParseLong(_minFreq.Text, _cfg.Typo.MinFrequency);
+        config.Typo.Enabled = _typoEnabled.IsChecked == true;
+        config.Typo.MaxEditDistance = _ed2.IsChecked == true ? 2 : 1;
+        config.Typo.MinWordLength = ParseInt(_minWordLen.Text, _cfg.Typo.MinWordLength);
+        config.Ngram.Enabled = _ngramEnabled.IsChecked == true;
+        config.Ngram.WeightByFrequency = _ngramFreq.IsChecked == true;
+        config.Typo.ScoreGap = ParseDouble(_scoreGap.Text, _cfg.Typo.ScoreGap);
+        config.Typo.DominanceRatio = ParseDouble(_dominance.Text, _cfg.Typo.DominanceRatio);
+        config.Typo.MinFrequency = ParseLong(_minFreq.Text, _cfg.Typo.MinFrequency);
 
-        _cfg.Layout.Enabled = _layoutEnabled.IsChecked == true;
-        _cfg.Layout.MinWordLength = ParseInt(_layoutMinLen.Text, _cfg.Layout.MinWordLength);
-        _cfg.Layout.FixTypoOnSwitch = _fixTypoOnSwitch.IsChecked == true;
-        _cfg.Layout.FixTypoMinLength = ParseInt(_fixTypoMinLen.Text, _cfg.Layout.FixTypoMinLength);
-        _cfg.Layout.ProtectTechnical = _protectTech.IsChecked == true;
-        _cfg.Layout.NormalizeMixedScript = _normMixed.IsChecked == true;
-        _cfg.Layout.SwitchKnownDomainExt = _domainExt.IsChecked == true;
+        config.Layout.Enabled = _layoutEnabled.IsChecked == true;
+        config.Layout.MinWordLength = ParseInt(_layoutMinLen.Text, _cfg.Layout.MinWordLength);
+        config.Layout.FixTypoOnSwitch = _fixTypoOnSwitch.IsChecked == true;
+        config.Layout.FixTypoMinLength = ParseInt(_fixTypoMinLen.Text, _cfg.Layout.FixTypoMinLength);
+        config.Layout.ProtectTechnical = _protectTech.IsChecked == true;
+        config.Layout.NormalizeMixedScript = _normMixed.IsChecked == true;
+        config.Layout.SwitchKnownDomainExt = _domainExt.IsChecked == true;
 
-        _cfg.Exclusions.SkipPasswordFields = _skipPw.IsChecked == true;
-        _cfg.Exclusions.AppBlacklist = SplitLines(_blacklist.Text);
+        config.Exclusions.SkipPasswordFields = _skipPw.IsChecked == true;
+        config.Exclusions.AppBlacklist = SplitLines(_blacklist.Text);
+        ReadFeaturePreferences(config);
+        var result = ConfigStore.Clone(config);
+        result.Normalize();
+        return result;
+    }
+
+    private void Save()
+    {
+        var config = ReadFormConfiguration();
 
         // Пользовательские списки - в файлы.
         CaptureUserEditors();
         foreach (var entry in _userTexts)
             _store.SaveText(_store.UserListPath(entry.Key.Kind, entry.Key.Scope), entry.Value);
 
-        _store.Save(_cfg);
+        _store.Save(config);
+        _cfg.CopyFrom(config);
         _onSaved();
 
         // Окно остаётся открытым - показываем подтверждение.
@@ -497,6 +513,7 @@ public sealed class SettingsWindow : Window
             if (language.SelectedValue is string id && id != L.Language) UiPreferences.Save(() => UiPreferences.SetLanguage(id));
         };
         Row(languageCard, "Выберите язык интерфейса", "Язык меню, окон, подсказок и сообщений. Языки обработки текста настраиваются отдельно на странице «Языки».", language);
+        TrackDefault(language, "ru", () => language.SelectedValue, () => UiPreferences.Save(() => UiPreferences.SetLanguage("ru")), "appearance.language");
         var themeCard = Card(page, "Оформление");
         var theme = new ComboBox { Width = 185, ItemsSource = UiPreferences.Themes, DisplayMemberPath = "Label", SelectedValuePath = "Id" };
         theme.SetBinding(ComboBox.SelectedValueProperty, new Binding(nameof(Theme.ThemeState.Mode)) { Source = Theme.State, Mode = BindingMode.OneWay });
@@ -506,6 +523,7 @@ public sealed class SettingsWindow : Window
             if (theme.SelectedValue is string id && id != Theme.State.Mode) UiPreferences.Save(() => UiPreferences.SetTheme(id));
         };
         Row(themeCard, "Тема", "Системная тема следует настройке оформления приложений Windows.", theme);
+        TrackDefault(theme, "dark", () => theme.SelectedValue, () => UiPreferences.Save(() => UiPreferences.SetTheme("dark")), "appearance.theme");
         page.Children.Add(new TextBlock { Foreground = Theme.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 18, 0, 0) }
             .Localize("Язык и тема применяются сразу и сохраняются автоматически. Незавершённые изменения остальных настроек сохраняются кнопкой «Сохранить»."));
         return page;

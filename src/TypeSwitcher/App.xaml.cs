@@ -170,7 +170,7 @@ public partial class App : Application
 
         _exclusions = new ExclusionManager();
         _exclusions.SetBlacklist(_cfg.Exclusions.AppBlacklist);
-        if (_cfg.Exclusions.SkipPasswordFields) _exclusions.StartFocusTracking();
+        _exclusions.StartFocusTracking();
 
         StartHookThread();
 
@@ -185,10 +185,7 @@ public partial class App : Application
         _processor = new InputProcessor(_analyzer, _hookDispatcher, _exclusions, _cfg.Exclusions.SkipPasswordFields)
         {
             Enabled = _cfg.General.Enabled,
-            HotkeyVk = _cfg.Layout.HotkeyUndoVk,
-            SuggestHotkeyVk = _cfg.Layout.HotkeySuggestVk,
-            CaseHotkeyVk = _cfg.Case.HotkeyVk,
-            CaseHotkeyShift = _cfg.Case.HotkeyShift,
+            CommandsSuspended = () => UiPreferences.CapturingHotkey,
             RuLayout = _layout.RuLayout,
             EnLayout = _layout.EnLayout,
             UkLayout = _layout.UkLayout
@@ -197,6 +194,8 @@ public partial class App : Application
         // после возврата из обработчика хука), всё остальное уходит в UI-поток.
         _processor.ReplacementRequested += OnReplacement;
         _processor.ToggleRequested += OnToggle;
+        _processor.ToggleEnabledRequested += () => Dispatcher.BeginInvoke(() => OnEnabledChanged(!_cfg.General.Enabled));
+        _processor.SelectionRequested += (command, target) => Dispatcher.BeginInvoke(() => ExecuteSelection(command, target));
         _processor.SuggestRequested += word => Dispatcher.BeginInvoke(() => ShowSuggestion(word.Word, word.Language));
 
         _suggestions = new SuggestionCounter
@@ -206,6 +205,8 @@ public partial class App : Application
         };
         _learn = new LearnLog(
             System.IO.Path.Combine(_store.DataDir, _cfg.Learning.File), _cfg.Learning.Enabled);
+        _learn.MaxEntries = _cfg.Learning.MaxEntries;
+        _processor.CorrectionCompleted += entry => Dispatcher.BeginInvoke(() => _learn.LogCorrection(entry.Original, entry.Corrected, entry.Kind));
         // WordRejected приходит синхронно из обработчика хука: запись лога и счётчик
         // окна слова - на UI-потоке, не в хуке.
         _processor.WordRejected += word => Dispatcher.BeginInvoke(() => OnWordRejected(word.Word, word.Language));
@@ -221,6 +222,15 @@ public partial class App : Application
             _cfg.General.Enabled);
         _tray.EnabledChanged += OnEnabledChanged;
         _tray.SettingsRequested += OpenSettings;
+        _tray.AboutRequested += () => { OpenSettings(); _settingsWindow?.SelectPage(SettingsWindow.AboutPage); };
+        _tray.LayoutRequested += (language, window) =>
+        {
+            IntPtr hkl = _layout.Get(language);
+            if (hkl == IntPtr.Zero) return;
+            NativeMethods.PostMessage(window, NativeMethods.WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, hkl);
+            _hookDispatcher.BeginInvoke(_processor.ResetWordState);
+        };
+        _tray.ConfigureInputDisplay(_cfg.Tray.ShowLayoutIndicator, _analyzer.LanguageOrder.Where(_layout.Available.Contains));
         _tray.ExitRequested += () => Shutdown();
 
         AutostartManager.Apply(_cfg.General.Autostart); // синхронизировать реестр с конфигом
@@ -321,9 +331,11 @@ public partial class App : Application
     // клик перестаёт сбрасывать набор. Таймер - на потоке хуков (переустановка
     // должна идти из того же потока, что и установка).
     private DispatcherTimer? _hookWatchdog;
+    private DispatcherTimer? _automationTimer;
 
     private void StartHookWatchdog()
     {
+        _automationTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, (_, _) => _processor.Tick(), _hookDispatcher);
         _hookWatchdog = new DispatcherTimer(TimeSpan.FromSeconds(30), DispatcherPriority.Normal, (_, _) =>
         {
             long slow = _hook.TakeMaxCallbackMs();
@@ -341,6 +353,7 @@ public partial class App : Application
         _cfg.General.Enabled = enabled;
         _store.Save(_cfg);
         _tray.SetEnabledChecked(enabled);
+        _settingsWindow?.SetEngineEnabled(enabled);
     }
 
     // Выполняется на потоке хуков. Окно сменилось между решением и инъекцией -
@@ -356,7 +369,7 @@ public partial class App : Application
     private void OnReplacement(ReplacementRequest req)
     {
         Core.Log.Line($"REPLACE backspaces={req.Backspaces} text='{req.Text}' kind={req.Kind} layout={req.Layout}");
-        if (TargetWindowChanged(req.Window)) return;
+        if (TargetWindowChanged(req.Window) || !_processor.CanApply(req.Target, req.Revision)) { _processor.ResetWordState(); return; }
 
         // Для смены раскладки сначала переключаем язык ввода окна, затем перенабираем.
         if (req.Kind == ActionKind.Layout)
@@ -429,7 +442,7 @@ public partial class App : Application
             var available = _layout.Available;
             var dictionaries = _dict;
             _exclusions.SetBlacklist(snapshot.Exclusions.AppBlacklist);
-            if (snapshot.Exclusions.SkipPasswordFields) _exclusions.StartFocusTracking();
+            _exclusions.StartFocusTracking();
             _ = _hookDispatcher.BeginInvoke(() =>
             {
                 if (cancellation.IsCancellationRequested) return;
@@ -446,13 +459,16 @@ public partial class App : Application
                 _processor.SuggestHotkeyVk = snapshot.Layout.HotkeySuggestVk;
                 _processor.CaseHotkeyVk = snapshot.Case.HotkeyVk;
                 _processor.CaseHotkeyShift = snapshot.Case.HotkeyShift;
+                _processor.Configure(snapshot);
                 _processor.RefreshExclusions();
             });
             _suggestions.Enabled = snapshot.Suggestions.Enabled;
             _suggestions.Threshold = snapshot.Suggestions.Threshold;
             _learn.Enabled = snapshot.Learning.Enabled;
+            _learn.MaxEntries = snapshot.Learning.MaxEntries;
             AutostartManager.Apply(snapshot.General.Autostart);
             _tray.SetEnabledChecked(snapshot.General.Enabled);
+            _tray.ConfigureInputDisplay(snapshot.Tray.ShowLayoutIndicator, snapshot.Languages.Enabled.Select(id => LanguageProfile.Find(id)!.Target).Where(_layout.Available.Contains));
             Core.Log.Line("settings and dictionary snapshot applied");
         }
         catch (OperationCanceledException) { }
@@ -528,7 +544,7 @@ public partial class App : Application
     private void OnToggle(ToggleRequest t)
     {
         Core.Log.Line($"TOGGLE backspaces={t.Backspaces} text='{t.Text}' activate={t.ActivateLayout}");
-        if (TargetWindowChanged(t.Window)) return;
+        if (TargetWindowChanged(t.Window) || !_processor.CanApply(t.Target, t.Revision)) { _processor.ResetWordState(); return; }
 
         if (t.ActivateLayout != LayoutTarget.None)
         {
@@ -552,6 +568,9 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         Theme.StopWatching();
+        _selectionCancellation?.Cancel();
+        _selectionChoice?.Close();
+        _selectionService?.Dispose();
         _dictionaryReload?.Cancel();
         if (_hookThread != null)
         {
@@ -561,6 +580,7 @@ public partial class App : Application
                 _hookDispatcher.Invoke(() =>
                 {
                     _hookWatchdog?.Stop();
+                    _automationTimer?.Stop();
                     _hook?.Dispose();
                     _mouseHook?.Dispose();
                 }, DispatcherPriority.Send, CancellationToken.None, TimeSpan.FromSeconds(1));

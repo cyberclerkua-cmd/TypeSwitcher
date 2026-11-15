@@ -399,6 +399,7 @@ public static class SelfTest
         public bool Caps;
         public bool AltGr;
         public bool Chord;      // зажат Ctrl/Alt/Win (команда, не текст)
+        public KeyModifiers ExtraModifiers = KeyModifiers.None;
         public IntPtr Window = (IntPtr)1; // "активное окно" - смена сбрасывает состояние
         public string Screen => _screen.ToString();
         public InputProcessor Processor => _proc;
@@ -487,8 +488,10 @@ public static class SelfTest
                 Modifiers = () => (Shift, Caps),
                 AltGrHeld = () => AltGr,
                 WindowsKeyHeld = () => false,
-                CommandChordHeld = () => Chord,
+                CommandChordHeld = () => Chord || (ExtraModifiers & (KeyModifiers.Control | KeyModifiers.Alt | KeyModifiers.Windows)) != 0,
+                ShortcutModifiers = () => (Shift ? KeyModifiers.Shift : 0) | (Chord ? KeyModifiers.Control : 0) | ExtraModifiers,
                 ForegroundWindow = () => Window,
+                TargetReader = () => new InputTarget(Window),
             };
             _proc.ReplacementRequested += r => Apply(r.Backspaces, r.Text, r.Layout, r.TrailingVk, r.TargetHkl);
             _proc.ToggleRequested += t => Apply(t.Backspaces, t.Text, t.ActivateLayout, t.TrailingVk, t.ActivateHkl);
@@ -528,11 +531,14 @@ public static class SelfTest
                 if (vk == 0x08)
                 {
                     if (_screen.Length > 0) _screen.Length--;
-                    return;
                 }
-                string? ch = Translate(vk, 0, Current, shift, Caps, AltGr);
-                if (ch != null) _screen.Append(ch);
+                else
+                {
+                    string? ch = Translate(vk, 0, Current, shift, Caps, AltGr);
+                    if (ch != null) _screen.Append(ch);
+                }
             }
+            _proc.OnKey(null, new KeyboardHook.KeyArgs { VkCode = vk, IsKeyDown = false });
         }
     }
 

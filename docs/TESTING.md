@@ -73,6 +73,8 @@ dotnet run --project tools/TypeSwitcher.Acceptance -c Release -- --app dist/Type
 dotnet run --project tools/TypeSwitcher.Acceptance -c Release -- --app dist/TypeSwitcher/TypeSwitcher.exe --phase dpi --report artifacts/acceptance/dpi
 dotnet run --project tools/TypeSwitcher.Acceptance -c Release -- --phase summary --report artifacts/acceptance
 dotnet run --project tools/TypeSwitcher.Acceptance -c Release -- --app dist/TypeSwitcher/TypeSwitcher.exe --phase appearance --report artifacts/acceptance/appearance
+dotnet run --project tools/TypeSwitcher.Acceptance -c Release -- --app dist/TypeSwitcher/TypeSwitcher.exe --phase features --report artifacts/acceptance/features
+dotnet run --project tools/TypeSwitcher.Acceptance -c Release -- --app dist/TypeSwitcher/TypeSwitcher.exe --phase selection --report artifacts/acceptance/selection
 ```
 
 Нужен интерактивный рабочий стол Windows; для browser — Edge. Native/browser открывают
@@ -80,6 +82,12 @@ dotnet run --project tools/TypeSwitcher.Acceptance -c Release -- --app dist/Type
 владелец активного окна; при потере фокуса проверка прекращается. Browser использует
 отдельный профиль и локальную HTML-страницу. Можно задать `--work-root` для временных
 копий. Они сохраняются для разбора результатов. UI-прогон не использует пользовательскую data/.
+
+`features` проверяет новые страницы, локализацию «О программе», индивидуальный сброс,
+сохранение автоматики и правил, диагностическую песочницу, историю и выбор `.exe`.
+`selection` открывает отдельное тестовое окно и проверяет реальное чтение/запись через
+UI Automation, неизменность номера последовательности буфера обмена, защиту пароля,
+исключённого приложения и устаревшего запроса. Предыдущее активное окно восстанавливается.
 
 `--low-integrity-probe` — внутренний режим отдельного helper-процесса: он понижает только
 свой токен для проверки относительного integrity-гейта. Стенд не отключает LLKHF_INJECTED.

@@ -1,7 +1,3 @@
-using System.IO;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-
 namespace TypeSwitcher.Core;
 
 /// <summary>
@@ -24,12 +20,7 @@ public sealed class LearnLog
 
     /// <summary>Ведение лога включено (меняется на лету из настроек).</summary>
     public bool Enabled { get; set; }
-
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        // Читаемая кириллица в локальном файле (не \uXXXX).
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
+    public int MaxEntries { get; set; } = 500;
 
     public LearnLog(string path, bool enabled)
     {
@@ -48,8 +39,7 @@ public sealed class LearnLog
         if (!Enabled || string.IsNullOrEmpty(e.orig)) return;
         try
         {
-            string line = JsonSerializer.Serialize(e, JsonOpts);
-            lock (_lock) File.AppendAllText(_path, line + "\n");
+            lock (_lock) CorrectionHistory.Append(_path, new(e.ts, e.ev, e.orig, e.res, e.kind), MaxEntries);
         }
         catch { /* лог не критичен - не роняем ввод из-за него */ }
     }

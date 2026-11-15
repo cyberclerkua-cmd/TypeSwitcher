@@ -35,13 +35,15 @@ public sealed class Dictionaries
         public readonly HashSet<string> Extra = new(StringComparer.Ordinal);
         public readonly Dictionary<string, long> Frequencies = new(StringComparer.Ordinal);
         public readonly Dictionary<string, List<string>> Prefix = new(StringComparer.Ordinal);
+        public readonly HashSet<string> Roots = new(StringComparer.Ordinal);
+        public string[] Completions = [];
         public bool Indexed;
         public volatile NgramModel? Ngram;
     }
 
-    private sealed record Lists(HashSet<string> Words, HashSet<string> Stops, Dictionary<string, string> Rules)
+    private sealed record Lists(HashSet<string> Words, HashSet<string> Stops, Dictionary<string, string> Rules, string[] PrefixWords)
     {
-        public static Lists Empty() => new(new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal));
+        public static Lists Empty() => new(new(StringComparer.Ordinal), new(StringComparer.Ordinal), new(StringComparer.Ordinal), []);
     }
 
     private sealed record UserSnapshot(Lists Global, IReadOnlyDictionary<LayoutTarget, Lists> Scoped);
@@ -73,6 +75,8 @@ public sealed class Dictionaries
     public bool LoadHunspell(LayoutTarget language, string path)
     {
         _languages[language].Main = TryLoadHunspell(path, Path.ChangeExtension(path, ".aff"));
+        _languages[language].Roots.Clear();
+        if (_languages[language].Main != null) ReadRoots(_languages[language], path, language);
         return _languages[language].Main != null;
     }
 
@@ -82,7 +86,20 @@ public sealed class Dictionaries
         WordList? words = TryLoadHunspell(path, affPath, cleanComments);
         if (words == null) return false;
         _languages[language].Supplements.Add(words);
+        ReadRoots(_languages[language], path, language);
         return true;
+    }
+
+    private static void ReadRoots(LanguageData data, string path, LayoutTarget language)
+    {
+        var profile = LanguageProfile.Find(language)!;
+        foreach (string raw in File.ReadLines(path))
+        {
+            int end = raw.IndexOfAny(['/', '\t']);
+            string word = Key((end < 0 ? raw : raw[..end]).Trim());
+            if (profile.IsWord(word)) data.Roots.Add(word);
+        }
+        data.Indexed = false;
     }
 
     private static WordList? TryLoadHunspell(string dicPath, string affPath, bool cleanComments = false)
@@ -168,10 +185,11 @@ public sealed class Dictionaries
         // Первый Suggest включает большой объём JIT-компиляции Hunspell. Прогреваем
         // весь путь до установки хуков / до публикации нового снимка, а не на первом слове.
         var options = new TypoOptions(1, 5, 50, true, 1, 1, 1.5);
-        foreach (var profile in LanguageProfile.All.Where(p => p.Target != LayoutTarget.En && IsLoaded(p.Target)))
+        foreach (var profile in LanguageProfile.All.Where(p => IsLoaded(p.Target)))
         {
-            _ = RankCandidates(profile.Target, "абвгдеж", options);
-            _ = _languages[profile.Target].Ngram?.Score("абвгдеж");
+            string probe = profile.Target == LayoutTarget.En ? "qzxword" : "абвгдеж";
+            _ = RankCandidates(profile.Target, probe, options);
+            _ = _languages[profile.Target].Ngram?.Score(probe);
         }
     }
 
@@ -186,7 +204,25 @@ public sealed class Dictionaries
             if (!data.Prefix.TryGetValue(prefix, out var list)) data.Prefix[prefix] = list = new();
             list.Add(word);
         }
+        data.Completions = data.Roots.Concat(data.Frequencies.Keys).Concat(data.Extra).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         data.Indexed = true;
+    }
+
+    public int PrefixCount(LayoutTarget language, string prefix, int limit = 32)
+    {
+        if (prefix.Length == 0 || !_languages.TryGetValue(language, out var data)) return 0;
+        EnsureIndex(data);
+        prefix = Key(prefix);
+        IEnumerable<string> Matches(string[] words)
+        {
+            int index = Array.BinarySearch(words, prefix, StringComparer.Ordinal);
+            if (index < 0) index = ~index;
+            int count = 0;
+            while (index < words.Length && count++ < limit && words[index].StartsWith(prefix, StringComparison.Ordinal)) yield return words[index++];
+        }
+        var users = _users;
+        return Matches(data.Completions).Concat(Matches(users.Global.PrefixWords)).Concat(Matches(users.Scoped[language].PrefixWords))
+            .Distinct(StringComparer.Ordinal).Take(limit).Count();
     }
 
     public string? SuggestTypo(string word, in TypoOptions options) => SuggestTypo(LayoutTarget.Ru, word, options);
@@ -288,12 +324,35 @@ public sealed class Dictionaries
 
     public void LoadUserLists(string wordsPath, string stopsPath, string rulesPath)
     {
-        Lists Read(string words, string stops, string rules) => new(ReadWords(words), ReadWords(stops), ReadRules(rules));
+        Lists Read(string words, string stops, string rules)
+        {
+            var known = ReadWords(words);
+            return new(known, ReadWords(stops), ReadRules(rules), known.Order(StringComparer.Ordinal).ToArray());
+        }
         string Scoped(string path, string id) => Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + "." + id + ".txt");
         var global = Read(wordsPath, stopsPath, rulesPath);
         var scoped = LanguageProfile.All.ToDictionary(p => p.Target,
             p => Read(Scoped(wordsPath, p.Id), Scoped(stopsPath, p.Id), Scoped(rulesPath, p.Id)));
         _users = new(global, scoped);
+    }
+
+    public void LoadUserTexts(IReadOnlyDictionary<(string Kind, string Scope), string> texts)
+    {
+        Lists Read(string scope)
+        {
+            string[] Lines(string kind) => texts.GetValueOrDefault((kind, scope), "").Split('\n');
+            HashSet<string> Words(string kind) => Lines(kind).Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith('#')).Select(Key).ToHashSet(StringComparer.Ordinal);
+            var rules = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (string raw in Lines("rules"))
+            {
+                string line = raw.Trim(); int equals = line.IndexOf('=');
+                if (line.StartsWith('#') || equals <= 0 || line[(equals + 1)..].Trim().Length == 0) continue;
+                rules[Key(line[..equals].Trim())] = line[(equals + 1)..].Trim();
+            }
+            var words = Words("my_words");
+            return new(words, Words("stopwords"), rules, words.Order(StringComparer.Ordinal).ToArray());
+        }
+        _users = new(Read("global"), LanguageProfile.All.ToDictionary(p => p.Target, p => Read(p.Id)));
     }
 
     private static HashSet<string> ReadWords(string path) => !File.Exists(path) ? new(StringComparer.Ordinal)

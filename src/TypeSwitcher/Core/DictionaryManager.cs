@@ -25,6 +25,7 @@ public static class DictionaryManager
         new("en-hunspell", "English · Hunspell", "en", "hunspell", cfg.Dictionaries.EnHunspell),
         new("uk-hunspell", "Українська · ВЕСУМ 6.8.6", "uk", "hunspell", cfg.Dictionaries.UkHunspell),
         new("ru-frequency", "Русский · частоты 300k", "ru", "frequency", cfg.Dictionaries.RuFreq),
+        new("en-frequency", "English · частоты 50k", "en", "frequency", cfg.Dictionaries.EnFreq),
         new("uk-frequency", "Українська · частоты 50k", "uk", "frequency", cfg.Dictionaries.UkFreq),
         new("ru-extra", "Русский · современная лексика", "ru", "extra", cfg.Dictionaries.RuExtra),
         new("ru-extra-affix", "Русский · дополнительные словоформы", "ru", "affix", cfg.Dictionaries.RuExtraDic, Path.ChangeExtension(cfg.Dictionaries.RuHunspell, ".aff")),
@@ -104,7 +105,7 @@ public static class DictionaryManager
         }
 
         dictionaries.LoadUserLists(store.MyWordsPath, store.StopWordsPath, store.RulesPath);
-        foreach (var profile in LanguageProfile.All.Where(p => p.Target != LayoutTarget.En && cfg.Languages.Enabled.Contains(p.Id)))
+        foreach (var profile in LanguageProfile.All.Where(p => cfg.Languages.Enabled.Contains(p.Id)))
         {
             cancellation.ThrowIfCancellationRequested();
             if (!primary.TryGetValue(profile.Target, out string? path)) continue;
@@ -115,7 +116,7 @@ public static class DictionaryManager
                     model = NgramModel.BuildFromWords(dictionaries.FrequencyWords(profile.Target), profile.Target);
                 else
                     model = NgramModel.BuildOrLoad(path, frequencies.GetValueOrDefault(profile.Target) ?? "",
-                        Path.Combine(store.DataDir, profile.Target == LayoutTarget.Ru ? cfg.Ngram.CacheFile : "ngram_uk.cache"),
+                        Path.Combine(store.DataDir, profile.Target == LayoutTarget.Ru ? cfg.Ngram.CacheFile : $"ngram_{profile.Id}.cache"),
                         cfg.Ngram.WeightByFrequency, profile.Target);
                 dictionaries.SetNgram(model, profile.Target);
             }

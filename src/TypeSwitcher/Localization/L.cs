@@ -39,7 +39,11 @@ public static class L
     {
         using var stream = typeof(L).Assembly.GetManifestResourceStream($"TypeSwitcher.Localization.{language}.json")
             ?? throw new InvalidOperationException("Localization resource is missing: " + language);
-        return JsonSerializer.Deserialize<Dictionary<string, string>>(stream)!;
+        var result = JsonSerializer.Deserialize<Dictionary<string, string>>(stream)!;
+        using var features = typeof(L).Assembly.GetManifestResourceStream($"TypeSwitcher.Localization.{language}.features.json");
+        if (features != null)
+            foreach (var entry in JsonSerializer.Deserialize<Dictionary<string, string>>(features)!) result[entry.Key] = entry.Value;
+        return result;
     }
 
     public static void SetLanguage(string language)

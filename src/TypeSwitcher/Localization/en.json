@@ -1,4 +1,5 @@
 {
+  "English · частоты 50k": "English · word frequencies 50k",
   "TypeSwitcher — подключённые словари": "TypeSwitcher — dictionaries",
   "TypeSwitcher — правило": "TypeSwitcher — replacement rule",
   "TypeSwitcher — словари": "TypeSwitcher — dictionaries",
@@ -200,7 +201,7 @@
   "Файл должен существовать и иметь размер от 1 байта до 64 МБ.": "The file must exist and its size must be between 1 byte and 64 MB.",
   "Формат правила: что = на что.": "Rule format: source = replacement.",
   "В списке должно быть одно слово на строку.": "The list must contain one word per line.",
-  "Версия настроек {0} новее поддерживаемой (2)": "Settings version {0} is newer than the supported version (2)",
+  "Версия настроек {0} новее поддерживаемой ({1})": "Settings version {0} is newer than the supported version ({1})",
   "config.json пуст (null)": "config.json is empty (null)",
   "config.json не прочитан ({0}). Копия сохранена как {1}; загружены настройки по умолчанию.": "Could not read config.json ({0}). A backup was saved as {1}; default settings were loaded.",
   "config.json не прочитан ({0}), и сделать его копию не удалось. Загружены настройки по умолчанию; файл пока не перезаписан.": "Could not read config.json ({0}) or create a backup. Default settings were loaded; the file has not been overwritten.",

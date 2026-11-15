@@ -12,10 +12,11 @@ public readonly record struct Decision(ActionKind Kind, string Replacement, Layo
 }
 
 /// <summary>Пословный анализ с явным исходным языком. Первое уверенное правило выигрывает.</summary>
-public sealed class Analyzer
+public sealed partial class Analyzer
 {
     private Dictionaries _dict;
     private AppConfig _cfg;
+    internal AppConfig Settings => _cfg;
     public bool LayoutDetectionEnabled { get; set; }
     public int LayoutMinWordLength => _cfg.Layout.MinWordLength;
     public IReadOnlySet<LayoutTarget>? AvailableLayouts { get; set; }
@@ -50,13 +51,13 @@ public sealed class Analyzer
 
     public Decision Analyze(string word, LayoutTarget source = LayoutTarget.None)
     {
-        if (string.IsNullOrEmpty(word)) return Decision.None;
+        if (string.IsNullOrEmpty(word)) return Keep(source, "empty");
         if (source == LayoutTarget.None) source = GuessLanguage(word);
-        if (!IsLanguageEnabled(source)) return Decision.None;
+        if (!IsLanguageEnabled(source)) return Keep(source, "language-disabled");
         // Приложения по-разному удаляют составной графемный кластер Backspace.
         // Нормализацию используем для поиска, но такие последовательности не перенабираем.
         if (word.Any(LanguageProfile.IsCombining)) return Decision.None with { Source = source, Reason = "combining-marks" };
-        if (_dict.IsStopWord(word, source)) return Decision.None;
+        if (_dict.IsStopWord(word, source)) return Keep(source, "stop-word");
 
         string? twoCaps = _cfg.Case.FixTwoCapitals ? CaseHelper.FixTwoCapitals(word) : null;
         if (twoCaps == null) return AnalyzeCore(word, source);
@@ -72,12 +73,16 @@ public sealed class Analyzer
 
     private Decision AnalyzeCore(string word, LayoutTarget source)
     {
-        if (_dict.IsStopWord(word, source)) return Decision.None;
+        if (_dict.IsStopWord(word, source)) return Keep(source, "stop-word");
         if (_dict.TryRule(word, out _, source)) return MatchRule(word, source);
-        if (_dict.IsMyWord(word, source)) return Decision.None;
+        if (_dict.IsMyWord(word, source)) return Keep(source, "personal-word");
         string lower = LanguageProfile.Normalize(word).ToLowerInvariant();
 
-        if (LayoutDetectionEnabled && _cfg.Layout.Enabled)
+        Decision policy = MatchLayoutRule(word, source);
+        if (policy.Kind != ActionKind.None) return policy;
+        bool keepLayout = policy.Reason is "layout-rule-keep" or "layout-rule-unavailable";
+
+        if (!keepLayout && LayoutDetectionEnabled && _cfg.Layout.Enabled)
         {
             Decision layout = DetectLayout(word, lower, source);
             if (layout.Kind != ActionKind.None || layout.Reason == "ambiguous-layout") return layout;
@@ -88,11 +93,15 @@ public sealed class Analyzer
             }
         }
 
-        if (!_cfg.Typo.Enabled || word.Length < _cfg.Typo.MinWordLength || source == LayoutTarget.En) return Decision.None;
-        if (LanguageProfile.Find(source) is not { } profile || !profile.IsWord(word) || HasInnerCapital(word)) return Decision.None;
-        if (_dict.IsValid(source, word)) return Decision.None;
+        if (keepLayout) return policy;
+        if (_dict.IsValid(source, word)) return Keep(source, "known-word");
+        if (TokenClassifier.IsTechnical(word)) return Keep(source, "technical-token");
+        if (!_cfg.Typo.Enabled) return Keep(source, "typos-disabled");
+        if (word.Length < _cfg.Typo.MinWordLength) return Keep(source, "too-short");
+        if (source == LayoutTarget.En && !_cfg.Typo.EnglishEnabled) return Keep(source, "english-disabled");
+        if (LanguageProfile.Find(source) is not { } profile || !profile.IsWord(word) || HasInnerCapital(word)) return Keep(source, "protected-shape");
         string? suggestion = _dict.SuggestTypo(source, lower, TypoOpts());
-        if (suggestion == null) return Decision.None;
+        if (suggestion == null) return Keep(source, "low-confidence");
         string corrected = LanguageProfile.MatchApostrophe(word, CaseHelper.ApplyCasePattern(word, suggestion));
         return corrected == word ? Decision.None : new(ActionKind.Typo, corrected, Source: source, Reason: "spelling");
     }
@@ -107,6 +116,8 @@ public sealed class Analyzer
         if (source == target || !CanSwitchTo(target) || !IsLanguageEnabled(source) || targetText.Length < LayoutMinWordLength) return false;
         if (_dict.IsStopWord(current, source) || _dict.IsMyWord(current, source)) return false;
         if (_cfg.Layout.ProtectTechnical && TokenClassifier.IsTechnical(current)) return false;
+        var rule = LayoutRule.Find(_cfg.Layout.Rules, current, source);
+        if (rule != null && (rule.Action == "keep" || rule.Target != LanguageProfile.Find(target)?.Id)) return false;
         return _dict.IsValid(target, targetText.ToLowerInvariant()) && !_dict.IsValid(source, current.ToLowerInvariant());
     }
 

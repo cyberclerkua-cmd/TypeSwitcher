@@ -49,6 +49,20 @@ public sealed class ExclusionManager : IDisposable
         _blacklist = set;
     }
 
+    public static string? ExecutableName(IntPtr window)
+    {
+        GetWindowThreadProcessId(window, out uint pid);
+        if (pid == 0) return null;
+        IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero) return null;
+        try
+        {
+            var path = new StringBuilder(4096); int length = path.Capacity;
+            return QueryFullProcessImageName(process, 0, path, ref length) ? System.IO.Path.GetFileName(path.ToString()) : null;
+        }
+        finally { CloseHandle(process); }
+    }
+
     /// <summary>Процесс активного окна входит в чёрный список.</summary>
     public bool IsBlacklistedApp(IntPtr foreground)
     {
@@ -147,6 +161,18 @@ public sealed class ExclusionManager : IDisposable
     private sealed record FocusState(IntPtr Foreground, bool IsPassword);
     private volatile FocusState? _focusState;
     private long _focusVersion;
+
+    public InputTarget CaptureTarget()
+    {
+        IntPtr window = ForegroundWindow();
+        var info = new GUITHREADINFO { cbSize = Marshal.SizeOf<GUITHREADINFO>() };
+        uint thread = GetWindowThreadProcessId(window, out _);
+        if (thread != 0 && GetGUIThreadInfo(thread, ref info))
+            return new(window, info.hwndFocus, Volatile.Read(ref _focusVersion), info.hwndCaret, info.rcCaret.Left, info.rcCaret.Top);
+        return new(window, FocusedControl(), Volatile.Read(ref _focusVersion));
+    }
+
+    public bool IsCurrentTarget(InputTarget target) => target.Matches(CaptureTarget());
 
     /// <summary>Быстрый детект на каждую клавишу: нативный ES_PASSWORD или флаг из событий UIA.</summary>
     public bool IsPasswordFast()

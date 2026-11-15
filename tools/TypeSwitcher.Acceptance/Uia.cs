@@ -86,6 +86,7 @@ internal static class Uia
 
     public static void Choose(AutomationElement combo, string itemName, int processId)
     {
+        if (combo.TryGetCurrentPattern(ScrollItemPattern.Pattern, out var scroll)) ((ScrollItemPattern)scroll).ScrollIntoView();
         var expand = (ExpandCollapsePattern)combo.GetCurrentPattern(ExpandCollapsePattern.Pattern);
         expand.Expand();
         var item = Wait(() =>

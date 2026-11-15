@@ -68,7 +68,7 @@ UTF-8/формата, загрузку Hunspell во временной дире
 
 ## Пользовательские списки и миграция
 
-Схема config.json — 2, резервная копия схемы 1 — `config.json.v1.bak`.
+Схема config.json — 3, резервные копии схем 1/2 — `config.json.v1.bak` / `config.json.v2.bak`.
 Общие `my_words.txt`, `stopwords.txt`, `rules.txt` сохраняют свои пути и приоритеты.
 Языковые варианты имеют суффикс `.ru`, `.en`, `.uk` перед `.txt`.
 

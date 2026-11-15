@@ -10,7 +10,7 @@ namespace TypeSwitcher.Interop;
 /// </summary>
 public sealed class MouseHook : IDisposable
 {
-    /// <summary>Нажата кнопка мыши (вероятно, перемещена каретка).</summary>
+    /// <summary>Кнопка или прокрутка мыши: отменяет ожидающие команды и одиночный модификатор.</summary>
     public event Action? ButtonDown;
 
     private readonly LowLevelKeyboardProc _proc; // та же сигнатура подходит
@@ -53,7 +53,7 @@ public sealed class MouseHook : IDisposable
         if (nCode >= 0)
         {
             int msg = (int)wParam;
-            if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN)
+            if (msg is WM_LBUTTONDOWN or WM_RBUTTONDOWN or WM_MBUTTONDOWN or 0x020A or 0x020B or 0x020E)
             {
                 try { ButtonDown?.Invoke(); }
                 catch (Exception ex) { TypeSwitcher.Core.Log.Line($"MOUSE hook exception: {ex}"); }

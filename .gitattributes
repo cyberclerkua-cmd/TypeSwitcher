@@ -7,3 +7,4 @@
 *.dic -text
 *.aff -text
 dict/uk-50k.txt -text
+dict/en-50k.txt -text

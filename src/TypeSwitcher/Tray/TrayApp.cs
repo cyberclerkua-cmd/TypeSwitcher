@@ -7,6 +7,8 @@ using System.Windows.Threading;
 using Hardcodet.Wpf.TaskbarNotification;
 using TypeSwitcher.Interop;
 using TypeSwitcher.Localization;
+using TypeSwitcher.Core;
+using System.Globalization;
 
 namespace TypeSwitcher.Tray;
 
@@ -25,10 +27,18 @@ public sealed class TrayApp : IDisposable
     private readonly DispatcherTimer _clickTimer;
     private readonly MenuItem _toggleItem;
     private bool _enabled;
+    private readonly DispatcherTimer _layoutTimer;
+    private readonly Dictionary<LayoutTarget, MenuItem> _layoutItems = new();
+    private readonly Dictionary<(LayoutTarget, bool), BitmapSource> _layoutIcons = new();
+    private LayoutTarget _inputLanguage;
+    private bool _showLayout;
+    private IntPtr _lastExternalWindow;
 
     public event Action<bool>? EnabledChanged;
     public event Action? SettingsRequested;
     public event Action? ExitRequested;
+    public event Action? AboutRequested;
+    public event Action<LayoutTarget, IntPtr>? LayoutRequested;
 
     public TrayApp(string idleIconPath, string activeIconPath, int blinkMs, bool enabled)
     {
@@ -67,6 +77,16 @@ public sealed class TrayApp : IDisposable
         menu.Items.Add(settingsItem);
         menu.Items.Add(UiPreferences.LanguageMenu());
         menu.Items.Add(UiPreferences.ThemeMenu());
+        var layouts = new MenuItem().Localize(HeaderedItemsControl.HeaderProperty, "Раскладка ввода");
+        foreach (var profile in LanguageProfile.All)
+        {
+            var item = new MenuItem { IsCheckable = true, IsEnabled = false }.Localize(HeaderedItemsControl.HeaderProperty, profile.Name);
+            item.Click += (_, _) => { if (_lastExternalWindow != IntPtr.Zero) LayoutRequested?.Invoke(profile.Target, _lastExternalWindow); };
+            layouts.Items.Add(item); _layoutItems[profile.Target] = item;
+        }
+        menu.Items.Add(layouts);
+        var about = new MenuItem().Localize(HeaderedItemsControl.HeaderProperty, "О программе");
+        about.Click += (_, _) => AboutRequested?.Invoke(); menu.Items.Add(about);
         menu.Items.Add(new Separator());
         menu.Items.Add(exitItem);
 
@@ -81,6 +101,9 @@ public sealed class TrayApp : IDisposable
         ApplyStateIcon();
         UpdateTooltip();
         L.Changed += LanguageChanged;
+        _layoutTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _layoutTimer.Tick += (_, _) => UpdateInputLanguage();
+        _layoutTimer.Start();
     }
 
     public void SetEnabledChecked(bool enabled)
@@ -101,12 +124,52 @@ public sealed class TrayApp : IDisposable
 
     private void ApplyStateIcon()
     {
+        if (_showLayout && _inputLanguage != LayoutTarget.None)
+        {
+            if (!_layoutIcons.TryGetValue((_inputLanguage, _enabled), out var image))
+            {
+                var visual = new DrawingVisual();
+                using (var drawing = visual.RenderOpen())
+                {
+                    drawing.DrawRoundedRectangle(new SolidColorBrush(_enabled ? Color.FromRgb(24, 110, 190) : Color.FromRgb(100, 100, 100)), null, new Rect(0, 0, 32, 32), 5, 5);
+                    var text = new FormattedText(LanguageProfile.Find(_inputLanguage)!.Id.ToUpperInvariant(), CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                        new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal), 18, Brushes.White, 1);
+                    drawing.DrawText(text, new Point((32 - text.WidthIncludingTrailingWhitespace) / 2, (32 - text.Height) / 2));
+                }
+                var bitmap = new RenderTargetBitmap(32, 32, 96, 96, PixelFormats.Pbgra32); bitmap.Render(visual); bitmap.Freeze();
+                image = bitmap; _layoutIcons[(_inputLanguage, _enabled)] = image;
+            }
+            _icon.IconSource = image;
+            return;
+        }
         var icon = _enabled ? _idle : _grey;
         if (icon != null) _icon.IconSource = icon;
     }
 
     private void LanguageChanged(object? sender, EventArgs e) => UpdateTooltip();
-    private void UpdateTooltip() => _icon.ToolTipText = L.T(_enabled ? "TypeSwitcher — включено" : "TypeSwitcher — выключено");
+    private void UpdateTooltip() => _icon.ToolTipText = L.T(_enabled ? "TypeSwitcher — включено" : "TypeSwitcher — выключено")
+        + (_inputLanguage == LayoutTarget.None ? "" : " · " + LanguageProfile.Find(_inputLanguage)!.Id.ToUpperInvariant());
+
+    public void ConfigureInputDisplay(bool showLayout, IEnumerable<LayoutTarget> enabled)
+    {
+        _showLayout = showLayout;
+        var available = enabled.ToHashSet();
+        foreach (var item in _layoutItems) item.Value.IsEnabled = available.Contains(item.Key);
+        UpdateInputLanguage(); ApplyStateIcon();
+    }
+
+    private void UpdateInputLanguage()
+    {
+        IntPtr window = NativeMethods.GetForegroundWindow();
+        NativeMethods.GetWindowThreadProcessId(window, out uint pid);
+        if (pid != 0 && pid != Environment.ProcessId && window != NativeMethods.GetShellWindow()) _lastExternalWindow = window;
+        var language = LanguageProfile.FromLayout(KeyTranslator.GetForegroundLayout());
+        foreach (var item in _layoutItems) item.Value.IsChecked = item.Key == language;
+        if (language == _inputLanguage) return;
+        _inputLanguage = language;
+        if (!_blinkTimer.IsEnabled) ApplyStateIcon();
+        UpdateTooltip();
+    }
 
     private static BitmapSource? TryLoadImage(string path)
     {
@@ -151,6 +214,7 @@ public sealed class TrayApp : IDisposable
         L.Changed -= LanguageChanged;
         _blinkTimer.Stop();
         _clickTimer.Stop();
+        _layoutTimer.Stop();
         _icon.Dispose();
     }
 }

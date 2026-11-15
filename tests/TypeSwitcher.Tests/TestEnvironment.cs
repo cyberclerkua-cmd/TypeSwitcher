@@ -24,6 +24,9 @@ public sealed class TestEnvironment : IDisposable
         string ru = Path.Combine(dict, "hunspell", "ru_RU.dic");
         Assert.True(Dictionary.LoadRuHunspell(ru));
         Assert.True(Dictionary.LoadEnHunspell(Path.Combine(dict, "hunspell", "en_US.dic")));
+        Assert.True(Dictionary.LoadFrequency(LayoutTarget.En, Path.Combine(dict, "en-50k.txt")));
+        Dictionary.SetNgram(NgramModel.BuildOrLoad(Path.Combine(dict, "hunspell", "en_US.dic"), Path.Combine(dict, "en-50k.txt"),
+            Path.Combine(Temp, "ngram_en.cache"), true, LayoutTarget.En), LayoutTarget.En);
         Assert.True(Dictionary.LoadFreq(Path.Combine(dict, "ru-300k.txt")));
         Assert.True(Dictionary.LoadExtra(Path.Combine(dict, "ru_extra.txt")));
         Assert.True(Dictionary.LoadRuExtraHunspell(Path.Combine(dict, "ru_extra.dic"), Path.ChangeExtension(ru, ".aff")));

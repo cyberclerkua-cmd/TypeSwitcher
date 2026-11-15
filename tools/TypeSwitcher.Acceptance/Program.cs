@@ -56,6 +56,8 @@ internal static class Program
             else if (phase == "browser") BrowserChecks.Run(session, report);
             else if (phase == "corpus") CorpusChecks.Run(session, report);
             else if (phase == "appearance") AppearanceChecks.Run(session, report);
+            else if (phase == "selection") SelectionChecks.Run(session, report);
+            else if (phase == "features") FeatureChecks.Run(session, report);
             else throw new ArgumentException("Unknown phase: " + phase);
         }
         catch (Exception ex)

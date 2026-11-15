@@ -5,10 +5,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $source = (Resolve-Path -LiteralPath $Directory).Path
-foreach ($name in @('TypeSwitcher.exe', 'LICENSE', 'PresentationNative_cor3.dll', 'dict\ru_RU.dic', 'dict\ru_RU.aff', 'dict\en_US.dic', 'dict\en_US.aff', 'dict\uk_UA.dic', 'dict\uk_UA.aff', 'dict\uk_UA.LICENSE', 'dict\uk-50k.txt', 'dict\SOURCES.md', 'assets\typeswitcher.png', 'assets\typeswitcher-action.png', 'assets\spell.wav')) {
+foreach ($name in @('TypeSwitcher.exe', 'LICENSE', 'PresentationNative_cor3.dll', 'dict\ru_RU.dic', 'dict\ru_RU.aff', 'dict\en_US.dic', 'dict\en_US.aff', 'dict\en-50k.txt', 'dict\uk_UA.dic', 'dict\uk_UA.aff', 'dict\uk_UA.LICENSE', 'dict\uk-50k.txt', 'dict\SOURCES.md', 'assets\typeswitcher.png', 'assets\typeswitcher-action.png', 'assets\spell.wav')) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $name) -PathType Leaf)) { throw "Missing published file: $name" }
 }
 $hashes = @{
+    'dict\en-50k.txt' = '5351FF405B1126EF555791DD4D9798A48E3E9A501A9FC481A9DA957752CFB458'
     'dict\uk_UA.dic' = 'B73062ADA50324D2575121C9734C18789D67EB4502AF6AE12ED62DEF7D0528B4'
     'dict\uk_UA.aff' = '3222E8D5F88FD1DB291A74C59E8FC5541BB2CC3D3AC29C6882DF4F3DBB051A32'
     'dict\uk-50k.txt' = '881686FE66A168B79F6A9EE2F6CBBF944CFB12BFB7040913EF535CB29BD86EC9'

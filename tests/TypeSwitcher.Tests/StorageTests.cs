@@ -31,7 +31,7 @@ public sealed class StorageTests
         File.WriteAllText(store.MyWordsPath, "авторскоеслово\n");
         var cfg = store.Load();
         Assert.Null(store.LoadProblem);
-        Assert.Equal(2, cfg.SchemaVersion);
+        Assert.Equal(AppConfig.CurrentSchemaVersion, cfg.SchemaVersion);
         Assert.False(cfg.General.Enabled);
         Assert.Equal(7, cfg.Typo.MinWordLength);
         Assert.Equal(original, File.ReadAllText(store.ConfigPath + ".v1.bak"));

@@ -6,7 +6,8 @@ namespace TypeSwitcher.Config;
 /// </summary>
 public sealed class AppConfig
 {
-    public int SchemaVersion { get; set; } = 2;
+    public const int CurrentSchemaVersion = 3;
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public LanguagesCfg Languages { get; set; } = new();
     public GeneralCfg General { get; set; } = new();
     public TypoCfg Typo { get; set; } = new();
@@ -20,6 +21,18 @@ public sealed class AppConfig
     public NgramCfg Ngram { get; set; } = new();
     public LearningCfg Learning { get; set; } = new();
     public UiCfg Ui { get; set; } = new();
+    public HotkeysConfig Hotkeys { get; set; } = new();
+    public SelectionCfg Selection { get; set; } = new();
+
+    /// <summary>Replace a validated form snapshot while retaining the root object used by live UI preferences.</summary>
+    public void CopyFrom(AppConfig value)
+    {
+        SchemaVersion = value.SchemaVersion; Languages = value.Languages; General = value.General;
+        Typo = value.Typo; Layout = value.Layout; Case = value.Case; Sound = value.Sound;
+        Tray = value.Tray; Suggestions = value.Suggestions; Exclusions = value.Exclusions;
+        Dictionaries = value.Dictionaries; Ngram = value.Ngram; Learning = value.Learning;
+        Ui = value.Ui; Hotkeys = value.Hotkeys; Selection = value.Selection;
+    }
 
     /// <summary>
     /// Привести загруженный конфиг к допустимому виду: секции, заданные в JSON как
@@ -47,6 +60,10 @@ public sealed class AppConfig
         Ngram ??= d.Ngram;
         Learning ??= d.Learning;
         Ui ??= d.Ui;
+        Hotkeys ??= d.Hotkeys;
+        Selection ??= d.Selection;
+        Hotkeys.Normalize();
+        SchemaVersion = CurrentSchemaVersion;
 
         General.Theme = General.Theme?.ToLowerInvariant() is "light" or "system" ? General.Theme.ToLowerInvariant() : "dark";
         General.Language = Localization.L.NormalizeLanguage(General.Language);
@@ -64,6 +81,12 @@ public sealed class AppConfig
         Layout.FixTypoMinLength = Math.Clamp(Layout.FixTypoMinLength, 1, 50);
         Layout.HotkeyUndoVk = Math.Clamp(Layout.HotkeyUndoVk, 0, 255);
         Layout.HotkeySuggestVk = Math.Clamp(Layout.HotkeySuggestVk, 0, 255);
+        Layout.IdleDelayMs = Math.Clamp(Layout.IdleDelayMs, 350, 5000);
+        Layout.EarlyMinLength = Math.Clamp(Layout.EarlyMinLength, 4, 12);
+        Layout.ContextMode = Layout.ContextMode is "observe" or "assist" ? Layout.ContextMode : "off";
+        Layout.Rules = (Layout.Rules ?? []).Where(r => r != null && r.IsValid()).Take(1000).ToList();
+        Selection.TargetLanguage = Selection.TargetLanguage is "en" or "ru" or "uk" ? Selection.TargetLanguage : "auto";
+        Selection.TransliterationLanguage = Selection.TransliterationLanguage is "ru" or "uk" ? Selection.TransliterationLanguage : "auto";
         Case.HotkeyVk = Math.Clamp(Case.HotkeyVk, 0, 255);
 
         Sound.TypoWav = Str(Sound.TypoWav, d.Sound.TypoWav);
@@ -82,6 +105,7 @@ public sealed class AppConfig
 
         Dictionaries.RuHunspell = Str(Dictionaries.RuHunspell, d.Dictionaries.RuHunspell);
         Dictionaries.EnHunspell = Str(Dictionaries.EnHunspell, d.Dictionaries.EnHunspell);
+        Dictionaries.EnFreq = Str(Dictionaries.EnFreq, d.Dictionaries.EnFreq);
         Dictionaries.RuFreq = Str(Dictionaries.RuFreq, d.Dictionaries.RuFreq);
         Dictionaries.RuExtra = Str(Dictionaries.RuExtra, d.Dictionaries.RuExtra);
         Dictionaries.RuExtraDic = Str(Dictionaries.RuExtraDic, d.Dictionaries.RuExtraDic);
@@ -94,6 +118,7 @@ public sealed class AppConfig
 
         Ngram.CacheFile = Str(Ngram.CacheFile, d.Ngram.CacheFile);
         Learning.File = Str(Learning.File, d.Learning.File);
+        Learning.MaxEntries = Math.Clamp(Learning.MaxEntries, 10, 10000);
 
         Ui.SettingsWidth = Num(Ui.SettingsWidth, 300, 20000, d.Ui.SettingsWidth);
         Ui.SettingsHeight = Num(Ui.SettingsHeight, 300, 20000, d.Ui.SettingsHeight);
@@ -143,6 +168,7 @@ public sealed class AppConfig
     public sealed class TypoCfg
     {
         public bool Enabled { get; set; } = true;
+        public bool EnglishEnabled { get; set; }
         // Расстояние редактирования кандидатов. 1 - консервативно (большинство опечаток),
         // 2 - агрессивнее, больше ложных.
         public int MaxEditDistance { get; set; } = 1;
@@ -167,6 +193,13 @@ public sealed class AppConfig
     public sealed class LayoutCfg
     {
         public bool Enabled { get; set; } = true;
+        public bool RespectManualLayout { get; set; } = true;
+        public bool CorrectOnIdle { get; set; }
+        public int IdleDelayMs { get; set; } = 900;
+        public bool EarlySwitch { get; set; }
+        public int EarlyMinLength { get; set; } = 4;
+        public string ContextMode { get; set; } = "off";
+        public List<LayoutRule> Rules { get; set; } = new();
         public string Aggressiveness { get; set; } = "confident";
         // Короткие слова часто случайно совпадают с реальным словом в другой раскладке
         // (yt->не, go->пщ). Консервативный порог по длине отсекает их (ТЗ, раздел 7).
@@ -222,6 +255,7 @@ public sealed class AppConfig
 
     public sealed class TrayCfg
     {
+        public bool ShowLayoutIndicator { get; set; }
         public bool BlinkOnAction { get; set; } = true;
         public int BlinkMs { get; set; } = 200;
         public string IconIdle { get; set; } = "assets/typeswitcher.png";
@@ -247,6 +281,13 @@ public sealed class AppConfig
         // Opt-in: по умолчанию выключено, включается пользователем в настройках.
         public bool Enabled { get; set; } = false;
         public string File { get; set; } = "corrections.jsonl";
+        public int MaxEntries { get; set; } = 500;
+    }
+
+    public sealed class SelectionCfg
+    {
+        public string TargetLanguage { get; set; } = "auto";
+        public string TransliterationLanguage { get; set; } = "auto";
     }
 
     public sealed class NgramCfg
@@ -266,6 +307,7 @@ public sealed class AppConfig
         // Словари Hunspell (.dic; рядом должен лежать одноимённый .aff).
         public string RuHunspell { get; set; } = "dict/ru_RU.dic";
         public string EnHunspell { get; set; } = "dict/en_US.dic";
+        public string EnFreq { get; set; } = "dict/en-50k.txt";
         public string UkHunspell { get; set; } = "dict/uk_UA.dic";
         public string UkFreq { get; set; } = "dict/uk-50k.txt";
         public List<DictionaryEntry> Installed { get; set; } = new();

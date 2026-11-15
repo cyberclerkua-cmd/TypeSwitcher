@@ -21,3 +21,12 @@
 
 Повторное получение: `tools/update-uk-dictionary.ps1` проверяет контрольные суммы.
 Словари RU/EN и их лицензии описаны в README.md и `hunspell/*.LICENSE`.
+
+## Английские частоты
+
+- FrequencyWords, Hermit Dave, данные OpenSubtitles 2018, первые 50 000 записей.
+- Источник: https://github.com/hermitdave/FrequencyWords/blob/f8a65e6ddc17e0baa2e366a909986798d8dbe55b/content/2018/en/en_50k.txt
+- Лицензия данных: CC BY-SA 4.0, https://creativecommons.org/licenses/by-sa/4.0/
+- Файл включён без преобразований как `en-50k.txt`.
+- SHA256: `5351ff405b1126ef555791dd4d9798a48e3e9a501a9fc481a9da957752cfb458`.
+- Повторное получение для сборки: `tools/update-en-dictionary.ps1`. Работа приложения загрузки не требует.

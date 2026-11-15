@@ -1,5 +1,6 @@
 using System.Windows.Threading;
 using TypeSwitcher.Interop;
+using TypeSwitcher.Config;
 
 namespace TypeSwitcher.Core;
 
@@ -7,7 +8,8 @@ namespace TypeSwitcher.Core;
 /// Автозамена слова. Window - активное окно на момент решения: если к моменту инъекции
 /// оно сменилось, backspace ушли бы в чужой текст - исполнитель замену отменяет.
 /// </summary>
-public sealed record ReplacementRequest(int Backspaces, string Text, ActionKind Kind, LayoutTarget Layout = LayoutTarget.None, int TrailingVk = 0, string Original = "", string Corrected = "", IntPtr Window = default, IntPtr TargetHkl = default);
+public sealed record ReplacementRequest(int Backspaces, string Text, ActionKind Kind, LayoutTarget Layout = LayoutTarget.None, int TrailingVk = 0, string Original = "", string Corrected = "", IntPtr Window = default, IntPtr TargetHkl = default,
+    InputTarget? Target = null, long Revision = 0);
 
 /// <summary>
 /// Переключение между исправленным и исходным вариантом по хоткею (Pause).
@@ -15,7 +17,8 @@ public sealed record ReplacementRequest(int Backspaces, string Text, ActionKind 
 /// раскладку переключиться (None - не трогать), TrailingVk - дожать Enter/Tab,
 /// Window - активное окно на момент решения (см. ReplacementRequest).
 /// </summary>
-public sealed record ToggleRequest(int Backspaces, string Text, LayoutTarget ActivateLayout, int TrailingVk = 0, IntPtr Window = default, IntPtr ActivateHkl = default);
+public sealed record ToggleRequest(int Backspaces, string Text, LayoutTarget ActivateLayout, int TrailingVk = 0, IntPtr Window = default, IntPtr ActivateHkl = default,
+    InputTarget? Target = null, long Revision = 0);
 public readonly record struct WordContext(string Word, LayoutTarget Language);
 
 /// <summary>
@@ -30,23 +33,27 @@ public readonly record struct WordContext(string Word, LayoutTarget Language);
 /// Защита от зацикливания: повторный ручной набор того же исходного слова сразу
 /// после правки трактуется как отказ - слово заносится в "не трогать".
 /// </summary>
-public sealed class InputProcessor
+public sealed partial class InputProcessor
 {
     private const int VK_BACK = 0x08;
     private const int VK_RETURN = 0x0D;
     private const int VK_TAB = 0x09;
 
     /// <summary>VK хоткея отката/смены раскладки (настраивается). По умолчанию Pause.</summary>
-    public int HotkeyVk { get; set; } = 0x13;
+    public int HotkeyVk { get => Hotkeys.ConvertWord.Vk; set => Hotkeys.ConvertWord = Hotkeys.ConvertWord with { Vk = value }; }
 
     /// <summary>VK хоткея вызова окна слова (настраивается). По умолчанию ScrollLock. 0 - выкл.</summary>
-    public int SuggestHotkeyVk { get; set; } = 0x91;
+    public int SuggestHotkeyVk { get => Hotkeys.WordActions.Vk; set => Hotkeys.WordActions = Hotkeys.WordActions with { Vk = value }; }
 
     /// <summary>VK хоткея смены регистра последнего слова (0 - выкл) и нужен ли Shift.
     /// По умолчанию Shift+Pause: проверяется раньше хоткея отката, поэтому Pause без
     /// Shift остаётся откатом/сменой раскладки.</summary>
-    public int CaseHotkeyVk { get; set; } = 0x13;
-    public bool CaseHotkeyShift { get; set; } = true;
+    public int CaseHotkeyVk { get => Hotkeys.ChangeCase.Vk; set => Hotkeys.ChangeCase = Hotkeys.ChangeCase with { Vk = value }; }
+    public bool CaseHotkeyShift
+    {
+        get => Hotkeys.ChangeCase.Modifiers.HasFlag(KeyModifiers.Shift);
+        set => Hotkeys.ChangeCase = Hotkeys.ChangeCase with { Modifiers = value ? Hotkeys.ChangeCase.Modifiers | KeyModifiers.Shift : Hotkeys.ChangeCase.Modifiers & ~KeyModifiers.Shift };
+    }
 
     private readonly WordBuffer _buffer = new();
     private readonly Analyzer _analyzer;
@@ -66,6 +73,7 @@ public sealed class InputProcessor
         public string OriginalSeparator = "";
         public bool ShowingCorrected;        // текущий видимый вариант
         public bool Counted;                 // откат по этому исправлению уже учтён
+        public bool InProgress;
 
         // Длина "следа" границы в символах (для backspace при переключении).
         public int SepFootprint => Separator.Length + (SepVk != 0 ? 1 : 0);
@@ -191,6 +199,7 @@ public sealed class InputProcessor
         _dispatcher = dispatcher;
         _exclusions = exclusions;
         SkipPasswordFields = skipPasswordFields;
+        Hotkeys = ConfigStore.Clone(analyzer.Settings).Hotkeys;
     }
 
     // Эмиссия событий: в бою - через Dispatcher (замена не в потоке хука), в headless
@@ -209,6 +218,11 @@ public sealed class InputProcessor
     /// </summary>
     public void ResetWordState()
     {
+        Revision++;
+        _pendingCommand = null;
+        _tap = null;
+        _manualWord = false;
+        ResetAdvancedState();
         _buffer.Reset();
         ResetSegment();
         ResetForce();
@@ -242,9 +256,10 @@ public sealed class InputProcessor
         return false;
     }
 
-    public void OnKey(object? sender, KeyboardHook.KeyArgs e)
+    private void ProcessKey(object? sender, KeyboardHook.KeyArgs e)
     {
-        if (!e.IsKeyDown) return;
+        if (!PrepareKey(e)) return;
+        if (HandleGlobalCommand(e)) return;
         if (!Enabled) { ResetWordState(); return; }
 
         // Сами модификаторы (Shift/Ctrl/Alt/Win/CapsLock) состояние не меняют.
@@ -266,48 +281,14 @@ public sealed class InputProcessor
         if (_foregroundExcluded) { ResetWordState(); return; }
         IntPtr inputLayout = CurrentLayout();
         if (LanguageProfile.FromLayout(inputLayout) == LayoutTarget.None) { ResetWordState(); return; }
+        ObserveLayout(inputLayout);
         bool characterKey = e.VkCode is >= 0x30 and <= 0x5A or >= 0xBA and <= 0xE2;
         bool altGrText = characterKey && LanguageProfile.FromLayout(inputLayout) == LayoutTarget.Uk && AltGrHeld() && !WindowsKeyHeld();
+        if (!altGrText && HandleTextCommand(e)) return;
         if (CommandChordHeld() && !altGrText)
         {
             ResetWordState();
             _exclusions?.InvalidateFocusCache();
-            return;
-        }
-
-        // Второй хоткей: вызвать окно слова вручную для последнего слова.
-        if (!altGrText && SuggestHotkeyVk != 0 && e.VkCode == (uint)SuggestHotkeyVk)
-        {
-            if (SkipPasswordFields && _exclusions != null && _exclusions.IsPasswordThorough()) { ResetWordState(); return; }
-            if (TrySuggest()) e.Suppress = true;
-            return;
-        }
-
-        // Хоткей регистра (Shift+Pause) - раньше отката: у них одна клавиша по умолчанию.
-        if (!altGrText && CaseHotkeyVk != 0 && e.VkCode == (uint)CaseHotkeyVk && Modifiers().Shift == CaseHotkeyShift)
-        {
-            if (SkipPasswordFields && _exclusions != null && _exclusions.IsPasswordThorough())
-            {
-                ResetWordState();
-                return;
-            }
-            if (TryChangeCase()) e.Suppress = true;
-            return;
-        }
-
-        // Хоткей Pause (контекстно): если по слову была автоправка - переключаем её;
-        // иначе перебиваем раскладку сырого сегмента (буквы+знаки), затем - запасной
-        // вариант по последнему завершённому слову. В поле пароля - ничего: перекладка
-        // впечатала бы (и записала в debug-лог) набранный пароль. Проверка полная (UIA),
-        // браузерное поле пароля быстрый детект может не увидеть; Pause жмут редко.
-        if (!altGrText && e.VkCode == (uint)HotkeyVk)
-        {
-            if (SkipPasswordFields && _exclusions != null && _exclusions.IsPasswordThorough())
-            {
-                ResetWordState();
-                return;
-            }
-            if (TryToggle() || TrySegmentRemap() || TryForceLayout()) e.Suppress = true;
             return;
         }
 
@@ -336,6 +317,8 @@ public sealed class InputProcessor
 
         if (e.VkCode == VK_BACK)
         {
+            _liveEdit = null;
+            _recentContext.Clear();
             if (_buffer.IsEmpty) ResetCase(); // стирают хвост завершённого слова
             _buffer.Backspace();
             _deletesSinceCorrection++;
@@ -378,6 +361,7 @@ public sealed class InputProcessor
             if (_buffer.IsEmpty) { ResetForce(); ResetCase(); }
             _buffer.Append(ch);
             RecordSeg(e.VkCode, e.ScanCode);
+            ObserveLiveKey(e);
             return;
         }
 
@@ -430,6 +414,20 @@ public sealed class InputProcessor
 
         if (isSpace || isEnterTab)
         {
+            if (_manualWord && (_segment.Count > 0 || word.Length > 0))
+            {
+                _manualWord = false;
+                string kept = _segment.Count > 0 ? Render(layout) : word;
+                ResetSegment();
+                _lastWord = kept; _lastWordLanguage = sourceLanguage;
+                // Manual language choice suppresses guesses, not an explicit text expansion configured by the user.
+                Decision explicitRule = _analyzer.MatchRule(kept, sourceLanguage);
+                if (explicitRule.Kind == ActionKind.Rule) { EmitCorrection(e, kept, explicitRule, sepText, sepVk); return; }
+                ArmForce(kept, sepText, sepVk, segSnapshot, segSnapshotHkl);
+                ArmCase(kept, sepText, sepVk);
+                RememberWord(kept, sourceLanguage);
+                return;
+            }
             if (TryRawBoundary(e, word, sepText, sepVk, layout)) return;
         }
         else
@@ -476,7 +474,7 @@ public sealed class InputProcessor
             }
         }
 
-        Decision decision = _analyzer.Analyze(word, sourceLanguage);
+        Decision decision = _manualWord ? Decision.None : AnalyzeCurrent(word, sourceLanguage);
 
         // Однобуквенное правило на границе-ЗНАКЕ не применяем: одиночная буква - префикс
         // многих слов, а знак может быть знаком-буквой, продолжающей слово. 'вэб' на EN =
@@ -542,6 +540,8 @@ public sealed class InputProcessor
             // Правки не было - слово доступно для ручного принудительного переключения раскладки.
             ArmForce(word, sepText, sepVk, segSnapshot, segSnapshotHkl);
             ArmCase(word, sepText, sepVk);
+            CompleteLiveEdit(word, sepText, sepVk);
+            RememberWord(word, sourceLanguage);
             return;
         }
 
@@ -564,6 +564,8 @@ public sealed class InputProcessor
             _lastWordLanguage = source;
             ArmForce(raw, separator, separatorVk, keys, sourceHkl);
             ArmCase(raw, separator, separatorVk);
+            CompleteLiveEdit(raw, separator, separatorVk);
+            RememberWord(raw, source);
         }
 
         if (manual || _analyzer.IsStopped(raw, source)) { KeepRaw(); return true; }
@@ -576,6 +578,14 @@ public sealed class InputProcessor
             return true;
         }
         if (_analyzer.IsProtected(raw, source)) { KeepRaw(); return true; }
+        Decision layoutRule = _analyzer.MatchLayoutRule(raw, source);
+        if (layoutRule.Kind != ActionKind.None)
+        {
+            _lastWord = raw; _lastWordLanguage = source;
+            EmitCorrection(e, raw, layoutRule, separator, separatorVk);
+            return true;
+        }
+        if (layoutRule.Reason is "layout-rule-keep" or "layout-rule-unavailable") { KeepRaw(); return true; }
         if (raw == word) return false;
 
         var candidates = new List<Decision>();
@@ -589,7 +599,12 @@ public sealed class InputProcessor
             else if (TrySplitRemap(keys, sourceHkl, targetHkl, raw, target, out string split)) replacement = split;
             if (replacement != null) candidates.Add(new(ActionKind.Layout, replacement, target, source, "raw-layout"));
         }
-        if (candidates.Count > 1) { KeepRaw(); return true; }
+        if (candidates.Count > 1)
+        {
+            Decision contextual = AnalyzeCurrent(raw, source);
+            if (contextual.Kind != ActionKind.None) { EmitCorrection(e, raw, contextual, separator, separatorVk); return true; }
+            KeepRaw(); return true;
+        }
         if (candidates.Count == 0) return false;
         _lastWord = raw;
         _lastWordLanguage = source;
@@ -603,18 +618,23 @@ public sealed class InputProcessor
         e.Suppress = true;
         ResetSegment(); // текст изменили - сырой сегмент устарел
 
-        var req = new ReplacementRequest(original.Length, decision.Replacement + sepText, decision.Kind, decision.Layout, sepVk, original, decision.Replacement, _lastForeground, LayoutFor(decision.Layout));
+        string recordedOriginal = _liveEdit?.Original ?? original;
+        IntPtr originalHkl = _liveEdit?.OriginalHkl ?? CurrentLayout();
+        ActionKind kind = _liveEdit?.Kind == ActionKind.Layout ? ActionKind.Layout : decision.Kind;
+        LayoutTarget target = decision.Layout != LayoutTarget.None ? decision.Layout : kind == ActionKind.Layout ? LanguageProfile.FromLayout(CurrentLayout()) : LayoutTarget.None;
+        _liveEdit = null;
+        var req = new ReplacementRequest(original.Length, decision.Replacement + sepText, kind, target, sepVk, recordedOriginal, decision.Replacement, _lastForeground, LayoutFor(target));
 
         _toggle = new ToggleState
         {
-            Original = original,
+            Original = recordedOriginal,
             Corrected = decision.Replacement,
             Separator = sepText,
             SepVk = sepVk,
-            Kind = decision.Kind,
-            Target = decision.Layout,
-            OriginalHkl = CurrentLayout(),
-            CorrectedHkl = LayoutFor(decision.Layout),
+            Kind = kind,
+            Target = target,
+            OriginalHkl = originalHkl,
+            CorrectedHkl = LayoutFor(target),
             OriginalSeparator = originalSeparator ?? sepText,
             ShowingCorrected = true
         };
@@ -623,8 +643,9 @@ public sealed class InputProcessor
         _recentCorrectedLen = decision.Replacement.Length;
         _deletesSinceCorrection = 0;
         ArmCase(decision.Replacement, sepText, sepVk);
+        RememberWord(decision.Replacement, target == LayoutTarget.None ? LanguageProfile.FromLayout(CurrentLayout()) : target);
 
-        Post(() => ReplacementRequested?.Invoke(req));
+        SendReplacement(req);
     }
 
     private bool TryToggle()
@@ -665,11 +686,18 @@ public sealed class InputProcessor
         }
 
         t.ShowingCorrected = !t.ShowingCorrected;
+        if (t.InProgress)
+        {
+            _buffer.Reset(); _buffer.Append(t.ShowingCorrected ? t.Corrected : t.Original);
+            ResetSegment(); _segmentOverflow = true;
+            _manualWord = true;
+            _liveEdit = null;
+        }
         _recentCorrectedOriginal = null;
         ArmCase(t.ShowingCorrected ? t.Corrected : t.Original, t.ShowingCorrected ? t.Separator : t.OriginalSeparator, t.SepVk);
         Log.Line($"toggle -> {(t.ShowingCorrected ? "исправленное" : "исходное")} '{req.Text}'");
 
-        Post(() => ToggleRequested?.Invoke(req));
+        SendToggle(req);
         return true;
     }
 
@@ -776,6 +804,7 @@ public sealed class InputProcessor
     /// <summary>Сбросить текущий набор (буфер слова + сырой сегмент), force не трогать.</summary>
     private void ResetTyping()
     {
+        ResetAdvancedState();
         _buffer.Reset();
         ResetSegment();
     }
@@ -847,10 +876,12 @@ public sealed class InputProcessor
 
     private void DropAfterCaseChange()
     {
+        _liveEdit = null;
         _toggleAvailable = false;
         _recentCorrectedOriginal = null;
         ResetForce();
         ResetSegment();
+        if (!_buffer.IsEmpty) _segmentOverflow = true;
     }
 
     private bool TrySegmentRemap()
@@ -1071,7 +1102,7 @@ public sealed class InputProcessor
     {
         Log.Line($"force-layout: -{backspaces} +'{text}' ({target}) vk={trailingVk}");
         var req = new ToggleRequest(backspaces, text, target, trailingVk, _lastForeground, LayoutFor(target));
-        Post(() => ToggleRequested?.Invoke(req));
+        SendToggle(req);
     }
 
     private static bool IsModifier(uint vk) => vk switch
