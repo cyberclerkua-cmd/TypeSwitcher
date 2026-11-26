@@ -32,16 +32,19 @@ public sealed class TrayApp : IDisposable
     private readonly Dictionary<(LayoutTarget, bool), BitmapSource> _layoutIcons = new();
     private LayoutTarget _inputLanguage;
     private bool _showLayout;
-    private IntPtr _lastExternalWindow;
+    private FocusedInput _lastExternal;
+    private readonly InputLanguageFeedback _feedback;
+    private readonly ContextMenu _menu;
 
     public event Action<bool>? EnabledChanged;
     public event Action? SettingsRequested;
     public event Action? ExitRequested;
     public event Action? AboutRequested;
-    public event Action<LayoutTarget, IntPtr>? LayoutRequested;
+    internal event Action<LayoutTarget, FocusedInput>? LayoutRequested;
 
-    public TrayApp(string idleIconPath, string activeIconPath, int blinkMs, bool enabled)
+    internal TrayApp(string idleIconPath, string activeIconPath, int blinkMs, bool enabled, InputLanguageFeedback feedback)
     {
+        _feedback = feedback;
         _enabled = enabled;
         _idle = TryLoadImage(idleIconPath);
         _active = TryLoadImage(activeIconPath);
@@ -72,7 +75,7 @@ public sealed class TrayApp : IDisposable
         var exitItem = new MenuItem().Localize(HeaderedItemsControl.HeaderProperty, "Выход");
         exitItem.Click += (_, _) => ExitRequested?.Invoke();
 
-        var menu = new ContextMenu();
+        var menu = _menu = new ContextMenu();
         menu.Items.Add(_toggleItem);
         menu.Items.Add(settingsItem);
         menu.Items.Add(UiPreferences.LanguageMenu());
@@ -81,7 +84,7 @@ public sealed class TrayApp : IDisposable
         foreach (var profile in LanguageProfile.All)
         {
             var item = new MenuItem { IsCheckable = true, IsEnabled = false }.Localize(HeaderedItemsControl.HeaderProperty, profile.Name);
-            item.Click += (_, _) => { if (_lastExternalWindow != IntPtr.Zero) LayoutRequested?.Invoke(profile.Target, _lastExternalWindow); };
+            item.Click += (_, _) => { if (_lastExternal.Window != IntPtr.Zero) LayoutRequested?.Invoke(profile.Target, _lastExternal); };
             layouts.Items.Add(item); _layoutItems[profile.Target] = item;
         }
         menu.Items.Add(layouts);
@@ -109,6 +112,7 @@ public sealed class TrayApp : IDisposable
     public void SetEnabledChecked(bool enabled)
     {
         _enabled = enabled;
+        if (!enabled) _feedback.Reset();
         _toggleItem.IsChecked = enabled;
         ApplyStateIcon();
         UpdateTooltip();
@@ -150,25 +154,34 @@ public sealed class TrayApp : IDisposable
     private void UpdateTooltip() => _icon.ToolTipText = L.T(_enabled ? "TypeSwitcher — включено" : "TypeSwitcher — выключено")
         + (_inputLanguage == LayoutTarget.None ? "" : " · " + LanguageProfile.Find(_inputLanguage)!.Id.ToUpperInvariant());
 
-    public void ConfigureInputDisplay(bool showLayout, IEnumerable<LayoutTarget> enabled)
+    internal void ConfigureInputDisplay(Config.AppConfig config, IEnumerable<LayoutTarget> enabled)
     {
-        _showLayout = showLayout;
+        _showLayout = config.Tray.ShowLayoutIndicator;
+        _feedback.Configure(config);
+        _layoutTimer.Interval = TimeSpan.FromMilliseconds(_feedback.Active ? 100 : 400);
         var available = enabled.ToHashSet();
         foreach (var item in _layoutItems) item.Value.IsEnabled = available.Contains(item.Key);
         UpdateInputLanguage(); ApplyStateIcon();
     }
 
-    private void UpdateInputLanguage()
+    private async void UpdateInputLanguage()
     {
-        IntPtr window = NativeMethods.GetForegroundWindow();
-        NativeMethods.GetWindowThreadProcessId(window, out uint pid);
-        if (pid != 0 && pid != Environment.ProcessId && window != NativeMethods.GetShellWindow()) _lastExternalWindow = window;
-        var language = LanguageProfile.FromLayout(KeyTranslator.GetForegroundLayout());
-        foreach (var item in _layoutItems) item.Value.IsChecked = item.Key == language;
-        if (language == _inputLanguage) return;
-        _inputLanguage = language;
-        if (!_blinkTimer.IsEnabled) ApplyStateIcon();
-        UpdateTooltip();
+        var input = FocusedInput.Capture();
+        if (_menu.IsOpen || FocusedInput.ClassName(input.Window) is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "NotifyIconOverflowWindow" or "TopLevelWindowForOverflowXamlIsland")
+        {
+            _feedback.DismissIndicator();
+            return;
+        }
+        if (input.ProcessId != 0 && input.ProcessId != Environment.ProcessId && input.Window != NativeMethods.GetShellWindow()) _lastExternal = input;
+        var language = LanguageProfile.FromLayout(input.Layout);
+        if (language != _inputLanguage)
+        {
+            foreach (var item in _layoutItems) item.Value.IsChecked = item.Key == language;
+            _inputLanguage = language;
+            if (!_blinkTimer.IsEnabled) ApplyStateIcon();
+            UpdateTooltip();
+        }
+        if (_enabled && _feedback.Active) await _feedback.ObserveAsync(input, language);
     }
 
     private static BitmapSource? TryLoadImage(string path)
@@ -215,6 +228,7 @@ public sealed class TrayApp : IDisposable
         _blinkTimer.Stop();
         _clickTimer.Stop();
         _layoutTimer.Stop();
+        _feedback.Dispose();
         _icon.Dispose();
     }
 }

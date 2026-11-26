@@ -43,6 +43,26 @@ public sealed class StorageTests
         Assert.Equal(original, File.ReadAllText(store.ConfigPath + ".v1.bak"));
     }
 
+    [Fact]
+    public void ApplicationLayoutsRoundTripWithoutEnablingMissingLanguagesOrChangingHotkeys()
+    {
+        using var temp = new TestDirectory();
+        var store = new ConfigStore(temp.Path);
+        temp.Write("config.json", """{"schema_version":3,"hotkeys":{"undo":{"vk":90,"modifiers":3}},"languages":{"enabled":["en"],"use_application_layouts":true,"application_layouts":{" Telegram.EXE ":" UK ","no.exe":"zz","a/b.exe":"ru","Code.exe":"en"}}}""");
+        var cfg = store.Load();
+        Assert.Null(store.LoadProblem);
+        Assert.False(cfg.Tray.ShowCaretIndicator);
+        var shortcut = cfg.Hotkeys.Undo;
+        cfg.Tray.ShowCaretIndicator = true;
+        store.Save(cfg);
+        var restored = store.Load();
+        Assert.True(restored.Tray.ShowCaretIndicator && restored.Languages.UseApplicationLayouts);
+        Assert.Equal(2, restored.Languages.ApplicationLayouts.Count);
+        Assert.Equal("uk", restored.Languages.ApplicationLayouts["telegram.exe"]);
+        Assert.Equal(new[] { "en" }, restored.Languages.Enabled);
+        Assert.Equal(shortcut, restored.Hotkeys.Undo);
+    }
+
     [Theory]
     [InlineData("{ broken")]
     [InlineData("{\"schema_version\":99}")]

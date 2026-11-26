@@ -13,9 +13,15 @@ internal static class Native
     [StructLayout(LayoutKind.Explicit)] public struct InputUnion { [FieldOffset(0)] public MouseInput Mouse; [FieldOffset(0)] public KeyInput Key; }
     [StructLayout(LayoutKind.Sequential)] public struct Input { public uint Type; public InputUnion Data; }
     public delegate IntPtr HookCallback(int code, IntPtr message, IntPtr data);
+    public delegate IntPtr SubclassProc(IntPtr window, uint message, IntPtr wParam, IntPtr lParam, UIntPtr id, UIntPtr data);
+    [DllImport("comctl32.dll")] public static extern bool SetWindowSubclass(IntPtr window, SubclassProc procedure, UIntPtr id, UIntPtr data);
+    [DllImport("comctl32.dll")] public static extern IntPtr DefSubclassProc(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern IntPtr ActivateKeyboardLayout(IntPtr hkl, uint flags);
     [StructLayout(LayoutKind.Sequential)] private struct MandatoryLabel { public IntPtr Sid; public uint Attributes; }
 
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string? cls, string title);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
@@ -73,7 +79,8 @@ internal static class Native
 
     public static void RequireForeground(IntPtr ownedWindow)
     {
-        if (GetForegroundWindow() != ownedWindow) throw new InvalidOperationException("Foreground changed; no input sent.");
+        IntPtr current = GetForegroundWindow();
+        if (current != ownedWindow) throw new InvalidOperationException($"Foreground changed to {TypeSwitcher.Interop.FocusedInput.ClassName(current)} (0x{current:X}); no input sent.");
         foreach (int key in new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C })
             if ((GetAsyncKeyState(key) & 0x8000) != 0) throw new InvalidOperationException("A physical modifier is held; no input sent.");
     }

@@ -20,6 +20,7 @@ public sealed partial class InputProcessor
         public required IntPtr OriginalHkl;
         public required ActionKind Kind;
         public required IntPtr TargetHkl;
+        public required long AppliedAt;
     }
 
     public void OnKey(object? sender, KeyboardHook.KeyArgs e)
@@ -58,12 +59,13 @@ public sealed partial class InputProcessor
 
     private bool MayEditCurrentWord()
     {
-        if (!Enabled || _manualWord || _segmentManualLayout || _liveEdit != null || _pendingCommand != null
-            || _keysDown.Count != 0 || ShortcutModifiers() != 0 || _buffer.IsEmpty || _buffer.Current.Length > 64) return false;
+        if (!Enabled || _manualWord || _segmentManualLayout || _segmentHasHyphen || _segmentHasNumericDot || _liveEdit != null || _pendingCommand != null
+            || _keysDown.Count != 0 || ShortcutModifiers() != 0 || _buffer.IsEmpty || _buffer.Length > 64) return false;
+        string word = _buffer.Current;
+        if (char.IsAsciiDigit(word[0]) && word.Contains('ю')) return false; // may still become an identifier
         var target = ReadTarget();
         if (_lastField == null || !_lastField.Value.SameField(target)) { ResetWordState(); return false; }
-        if (_exclusions != null && (_exclusions.IsBlacklistedApp(target.Window) || _exclusions.IsOwnProcessWindow(target.Window)
-            || _exclusions.IsAboveOwnIntegrity(target.Window) || _exclusions.IsPasswordThorough())) { ResetWordState(); return false; }
+        if (_exclusions != null && (_exclusions.IsExcludedTarget(target) || _exclusions.IsPasswordThorough())) { ResetWordState(); return false; }
         ObserveLayout(CurrentLayout());
         return !_manualWord && !_buffer.IsEmpty;
     }
@@ -80,6 +82,9 @@ public sealed partial class InputProcessor
     /// <summary>Called by a hook-thread timer; no network, field-text access or unbounded work.</summary>
     public void Tick()
     {
+        ObserveExpectedLayout();
+        if (_toggle is { Tail.Length: > 0 } correction && Milliseconds() - correction.CompletedAt > UndoTailLifetimeMs)
+            _toggle = null;
         if (!_analyzer.Settings.Layout.CorrectOnIdle || _idleAttempt == Revision || !MayEditCurrentWord()) return;
         long now = Milliseconds();
         var target = ReadTarget();
@@ -99,7 +104,7 @@ public sealed partial class InputProcessor
         IntPtr source = CurrentLayout();
         IntPtr target = decision.Layout == LayoutTarget.None ? source : LayoutFor(decision.Layout);
         if (target == IntPtr.Zero) return;
-        _liveEdit = new() { Original = original, OriginalHkl = source, Kind = decision.Kind, TargetHkl = target };
+        _liveEdit = new() { Original = original, OriginalHkl = source, Kind = decision.Kind, TargetHkl = target, AppliedAt = Milliseconds() };
         _buffer.Reset(); _buffer.Append(decision.Replacement);
         // The physical run no longer describes the displayed text after a spelling edit.
         ResetSegment(); _segmentOverflow = true;
@@ -139,7 +144,7 @@ public sealed partial class InputProcessor
         {
             Original = live.Original, Corrected = word, Separator = separator, OriginalSeparator = separator, SepVk = separatorVk,
             Kind = live.Kind, Target = LanguageProfile.FromLayout(live.TargetHkl), OriginalHkl = live.OriginalHkl,
-            CorrectedHkl = live.TargetHkl, ShowingCorrected = true
+            CorrectedHkl = live.TargetHkl, ShowingCorrected = true, CompletedAt = live.AppliedAt
         };
         _toggleAvailable = true;
         CorrectionCompleted?.Invoke(new(live.Original, word, live.Kind, LanguageProfile.FromLayout(live.TargetHkl)));

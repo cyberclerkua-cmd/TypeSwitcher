@@ -30,7 +30,7 @@ jobs:
         run: ./tools/verify-package.ps1 -Directory ./dist/TypeSwitcher -Reports ./artifacts/reports
       - name: Build portable archive
         shell: pwsh
-        run: ./tools/package.ps1 -Readme ./docs/FEATURES-2.1.md -OmitDocs
+        run: ./tools/package.ps1 -Readme ./docs/FEATURES-2.2.md -OmitDocs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

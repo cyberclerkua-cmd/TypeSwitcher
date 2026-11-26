@@ -17,6 +17,8 @@ public sealed partial class SettingsWindow
     private readonly Dictionary<InputCommand, TextBox> _hotkeyEditors = new();
     private CheckBox _englishEnabled = null!, _respectManual = null!, _correctIdle = null!, _earlySwitch = null!, _layoutIndicator = null!;
     private TextBox _idleDelay = null!, _earlyLength = null!, _historyLimit = null!;
+    private CheckBox _caretIndicator = null!, _useApplicationLayouts = null!;
+    private readonly Dictionary<string, ComboBox> _applicationLanguages = new(StringComparer.OrdinalIgnoreCase);
     private ComboBox _contextMode = null!, _layoutTap = null!, _convertTap = null!, _selectionTarget = null!, _transliteration = null!;
     private CancellationTokenSource? _diagnosticCancellation;
 
@@ -132,6 +134,9 @@ public sealed partial class SettingsWindow
         config.Layout.ContextMode = _contextMode.SelectedValue as string ?? "off";
         config.Layout.Rules = _draftLayoutRules.Select(r => r with { }).ToList();
         config.Tray.ShowLayoutIndicator = _layoutIndicator.IsChecked == true;
+        config.Tray.ShowCaretIndicator = _caretIndicator.IsChecked == true;
+        config.Languages.UseApplicationLayouts = _useApplicationLayouts.IsChecked == true;
+        config.Languages.ApplicationLayouts = _applicationLanguages.ToDictionary(p => p.Key, p => (string)p.Value.SelectedValue, StringComparer.OrdinalIgnoreCase);
         config.Learning.MaxEntries = ParseInt(_historyLimit.Text, _cfg.Learning.MaxEntries);
         config.Selection.TargetLanguage = _selectionTarget.SelectedValue as string ?? "auto";
         config.Selection.TransliterationLanguage = _transliteration.SelectedValue as string ?? "auto";
@@ -150,6 +155,8 @@ public sealed partial class SettingsWindow
         ToggleDefault(_suggestEnabled, defaults.Suggestions.Enabled, "suggestions.enabled");
         ToggleDefault(_learnLog, defaults.Learning.Enabled, "history.enabled");
         ToggleDefault(_layoutIndicator, defaults.Tray.ShowLayoutIndicator, "tray.layout");
+        ToggleDefault(_caretIndicator, defaults.Tray.ShowCaretIndicator, "tray.caret");
+        ToggleDefault(_useApplicationLayouts, defaults.Languages.UseApplicationLayouts, "languages.applications");
         ToggleDefault(_typoEnabled, defaults.Typo.Enabled, "typo.enabled");
         ToggleDefault(_englishEnabled, defaults.Typo.EnglishEnabled, "typo.english");
         ToggleDefault(_twoCaps, defaults.Case.FixTwoCapitals, "case.two-capitals");

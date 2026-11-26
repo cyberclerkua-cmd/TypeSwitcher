@@ -228,8 +228,9 @@ public sealed class Dictionaries
     public string? SuggestTypo(string word, in TypoOptions options) => SuggestTypo(LayoutTarget.Ru, word, options);
     public string? SuggestTypo(LayoutTarget language, string word, in TypoOptions options)
     {
-        var top = RankCandidates(language, word, options);
+        var top = RankCandidates(language, word, options, out bool gVariants);
         if (top.Count == 0) return null;
+        if (gVariants) return top.Count == 1 ? top[0].Word : null;
         if (options.UseNgram && HasNgram(language))
             return CandidateRanker.TryChooseBestWithGap(top, options.ScoreGap, c => c.Score, out var best) ? best.Word : null;
         return top.Count == 1 || (top[0].Frequency >= options.MinFrequency && top[0].Frequency >= options.DominanceRatio * top[1].Frequency)
@@ -237,7 +238,11 @@ public sealed class Dictionaries
     }
 
     public IReadOnlyList<TypoCandidate> RankCandidates(LayoutTarget language, string word, in TypoOptions options)
+        => RankCandidates(language, word, options, out _);
+
+    private IReadOnlyList<TypoCandidate> RankCandidates(LayoutTarget language, string word, in TypoOptions options, out bool gVariants)
     {
+        gVariants = false;
         if (!_languages.TryGetValue(language, out var data) || !IsLoaded(language) || word.Length > 128) return [];
         long started = _clock.GetTimestamp();
         long phaseStarted = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -251,6 +256,22 @@ public sealed class Dictionaries
         int inspected = 0;
         bool BatchExpired() => (++inspected & 63) == 0 && Expired();
         string lower = Key(word);
+        if (language == LayoutTarget.Uk && lower.Contains('г'))
+        {
+            if (IsValid(language, word)) return [];
+            var variants = new List<TypoCandidate>();
+            for (int i = lower.IndexOf('г'); i >= 0; i = lower.IndexOf('г', i + 1))
+            {
+                if (Expired()) return []; // never choose from a partially checked set
+                string form = string.Concat(lower.AsSpan(0, i), "ґ", lower.AsSpan(i + 1));
+                if (IsValid(language, form)) variants.Add(new(form, 1, data.Frequencies.GetValueOrDefault(form), 0));
+            }
+            if (variants.Count > 0)
+            {
+                gVariants = true;
+                return variants;
+            }
+        }
         var scored = new List<(string Term, int Distance, long Frequency)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         int maximum = options.MaxEditDistance;

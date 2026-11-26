@@ -231,6 +231,8 @@ public sealed partial class SettingsWindow : Window
             "Помогает настраивать качество на реальных данных. Никуда не отправляется.");
         _historyLimit = Number(learn, "Лимит записей истории", _cfg.Learning.MaxEntries.ToString(), "Хранятся только последние исправления. Запись истории включается отдельно.");
         _layoutIndicator = Toggle(main, "Показывать раскладку в трее", _cfg.Tray.ShowLayoutIndicator, "Индикатор EN/RU/UK отражает язык ввода активного окна.");
+        _caretIndicator = Toggle(main, "Показывать язык у каретки", _cfg.Tray.ShowCaretIndicator,
+            "При входе в поле или смене раскладки рядом с текстовым курсором ненадолго появляется EN, RU или UK.");
         return p;
     }
 
@@ -494,6 +496,7 @@ public sealed partial class SettingsWindow : Window
         var manual = Card(page, "Ручное переключение");
         _languageOrder = new TextBox { Text = string.Join(", ", _cfg.Languages.Order), Width = 165 };
         Row(manual, "Порядок раскладок", "Pause переключает по кругу; выключенные и отсутствующие раскладки пропускаются. При откате возвращается исходная раскладка.", _languageOrder);
+        BuildApplicationLayouts(page);
         page.Children.Add(new TextBlock
         {
             Foreground = Theme.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 18, 0, 0)

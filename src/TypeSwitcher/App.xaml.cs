@@ -190,6 +190,8 @@ public partial class App : Application
             EnLayout = _layout.EnLayout,
             UkLayout = _layout.UkLayout
         };
+        _selectionService = new(_exclusions, () => _processor.Revision);
+        _processor.VerifyUndoText = _selectionService.MatchesBeforeCaretAsync;
         // Обработчики ниже вызываются на потоке хука. Инъекция остаётся там же (сразу
         // после возврата из обработчика хука), всё остальное уходит в UI-поток.
         _processor.ReplacementRequested += OnReplacement;
@@ -219,18 +221,16 @@ public partial class App : Application
             _store.ResolveAppPath(_cfg.Tray.IconIdle),
             _store.ResolveAppPath(_cfg.Tray.IconActive),
             _cfg.Tray.BlinkMs,
-            _cfg.General.Enabled);
+            _cfg.General.Enabled, new InputLanguageFeedback(_exclusions, _layout));
         _tray.EnabledChanged += OnEnabledChanged;
         _tray.SettingsRequested += OpenSettings;
         _tray.AboutRequested += () => { OpenSettings(); _settingsWindow?.SelectPage(SettingsWindow.AboutPage); };
-        _tray.LayoutRequested += (language, window) =>
+        _tray.LayoutRequested += (language, input) =>
         {
             IntPtr hkl = _layout.Get(language);
-            if (hkl == IntPtr.Zero) return;
-            NativeMethods.PostMessage(window, NativeMethods.WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, hkl);
-            _hookDispatcher.BeginInvoke(_processor.ResetWordState);
+            if (input.RequestLayout(hkl)) _hookDispatcher.BeginInvoke(_processor.ResetWordState);
         };
-        _tray.ConfigureInputDisplay(_cfg.Tray.ShowLayoutIndicator, _analyzer.LanguageOrder.Where(_layout.Available.Contains));
+        _tray.ConfigureInputDisplay(_cfg, _analyzer.LanguageOrder.Where(_layout.Available.Contains));
         _tray.ExitRequested += () => Shutdown();
 
         AutostartManager.Apply(_cfg.General.Autostart); // синхронизировать реестр с конфигом
@@ -375,7 +375,7 @@ public partial class App : Application
         if (req.Kind == ActionKind.Layout)
         {
             IntPtr hkl = req.TargetHkl != IntPtr.Zero ? req.TargetHkl : _layout.Get(req.Layout);
-            _layout.Activate(hkl);
+            if (!LayoutSwitcher.ActivateFor(req.Target, hkl)) { _processor.ResetWordState(); return; }
         }
 
         if (!Replacer.Replace(req.Backspaces, req.Text, req.TrailingVk))
@@ -468,7 +468,7 @@ public partial class App : Application
             _learn.MaxEntries = snapshot.Learning.MaxEntries;
             AutostartManager.Apply(snapshot.General.Autostart);
             _tray.SetEnabledChecked(snapshot.General.Enabled);
-            _tray.ConfigureInputDisplay(snapshot.Tray.ShowLayoutIndicator, snapshot.Languages.Enabled.Select(id => LanguageProfile.Find(id)!.Target).Where(_layout.Available.Contains));
+            _tray.ConfigureInputDisplay(snapshot, snapshot.Languages.Enabled.Select(id => LanguageProfile.Find(id)!.Target).Where(_layout.Available.Contains));
             Core.Log.Line("settings and dictionary snapshot applied");
         }
         catch (OperationCanceledException) { }
@@ -543,13 +543,13 @@ public partial class App : Application
     // Выполняется на потоке хуков (как и OnReplacement).
     private void OnToggle(ToggleRequest t)
     {
-        Core.Log.Line($"TOGGLE backspaces={t.Backspaces} text='{t.Text}' activate={t.ActivateLayout}");
+        Core.Log.Line($"TOGGLE backspaces={t.Backspaces} length={t.Text.Length} activate={t.ActivateLayout}");
         if (TargetWindowChanged(t.Window) || !_processor.CanApply(t.Target, t.Revision)) { _processor.ResetWordState(); return; }
 
         if (t.ActivateLayout != LayoutTarget.None)
         {
             IntPtr hkl = t.ActivateHkl != IntPtr.Zero ? t.ActivateHkl : _layout.Get(t.ActivateLayout);
-            _layout.Activate(hkl);
+            if (!LayoutSwitcher.ActivateFor(t.Target, hkl)) { _processor.ResetWordState(); return; }
         }
 
         if (!Replacer.Replace(t.Backspaces, t.Text, t.TrailingVk))

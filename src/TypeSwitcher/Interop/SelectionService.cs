@@ -62,6 +62,24 @@ public sealed class SelectionService : IDisposable
         }, cancellation);
     }
 
+    public Task<bool> MatchesBeforeCaretAsync(InputTarget target, string expected)
+        => RunAsync(token =>
+        {
+            if (!_exclusions.IsCurrentTarget(target) || _exclusions.IsExcludedTarget(target) || _exclusions.IsPasswordFast()) return false;
+            var element = AutomationElement.FocusedElement;
+            if (element == null || element.GetCurrentPropertyValue(AutomationElement.IsPasswordProperty, true) is not false ||
+                !element.Current.IsEnabled || element.GetCurrentPropertyValue(ValuePattern.IsReadOnlyProperty, true) is true) return false;
+            if (!element.TryGetCurrentPattern(TextPattern.Pattern, out object pattern)) return true;
+            var ranges = ((TextPattern)pattern).GetSelection();
+            if (ranges.Length != 1) return false;
+            var span = ranges[0];
+            if (span.CompareEndpoints(TextPatternRangeEndpoint.Start, span, TextPatternRangeEndpoint.End) != 0 ||
+                span.GetAttributeValue(TextPattern.IsReadOnlyAttribute) is true) return false;
+            span.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, -expected.Length);
+            token.ThrowIfCancellationRequested();
+            return span.GetText(expected.Length + 1) == expected && _exclusions.IsCurrentTarget(target);
+        }, CancellationToken.None);
+
     public Task<bool> ReplaceAsync(Snapshot snapshot, string replacement, IntPtr targetLayout, bool confirmedPreview = false, CancellationToken cancellation = default)
         => RunAsync(token =>
         {
@@ -88,8 +106,7 @@ public sealed class SelectionService : IDisposable
                 replaced = Replacer.Replace(0, replacement);
             }
             if (!replaced) throw Refuse("Замена не завершена. Проверьте текст в приложении.");
-            if (targetLayout != IntPtr.Zero && NativeMethods.GetForegroundWindow() == snapshot.Target.Window)
-                NativeMethods.PostMessage(snapshot.Target.Window, NativeMethods.WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, targetLayout);
+            if (targetLayout != IntPtr.Zero && SameFocusedElement(snapshot)) LayoutSwitcher.ActivateFor(snapshot.Target, targetLayout);
 
             // Ask the provider to select the inserted range, and only accept a range with exactly that text.
             // Different providers count UTF-16, Unicode scalars or graphemes differently.
@@ -119,7 +136,7 @@ public sealed class SelectionService : IDisposable
     private void CheckWindow(InputTarget target)
     {
         if (target.Window == IntPtr.Zero || !_exclusions.IsCurrentTarget(target)) throw Refuse("Поле или положение курсора изменилось.");
-        if (_exclusions.IsOwnProcessWindow(target.Window) || _exclusions.IsBlacklistedApp(target.Window) || _exclusions.IsAboveOwnIntegrity(target.Window))
+        if (_exclusions.IsExcludedTarget(target))
             throw Refuse("В этом приложении преобразование выделения недоступно.");
         var name = new System.Text.StringBuilder(128);
         NativeMethods.GetClassName(target.Window, name, name.Capacity);

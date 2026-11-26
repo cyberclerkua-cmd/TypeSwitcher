@@ -33,8 +33,13 @@ public sealed class LayoutSwitcher
 
     public void Activate(IntPtr hkl)
     {
-        if (hkl == IntPtr.Zero) return;
-        IntPtr window = GetForegroundWindow();
-        if (window != IntPtr.Zero) PostMessage(window, WM_INPUTLANGCHANGEREQUEST, (IntPtr)INPUTLANGCHANGE_SYSCHARSET, hkl);
+        FocusedInput.Capture().RequestLayout(hkl);
+    }
+
+    internal static bool ActivateFor(InputTarget? expected, IntPtr hkl)
+    {
+        var input = FocusedInput.Capture();
+        return (expected == null || expected.Value.Window == input.Window && expected.Value.Control == input.Receiver)
+            && input.RequestLayout(hkl);
     }
 }

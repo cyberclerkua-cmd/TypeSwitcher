@@ -98,6 +98,7 @@ internal static class DesktopChecks
             report.Check("normal-field-not-password", !exclusions.IsPasswordThorough());
             exclusions.SetBlacklist(["TypeSwitcher.Acceptance.exe"]);
             report.Check("real-process-blacklist", exclusions.IsBlacklistedApp(handle));
+            exclusions.SetBlacklist([]);
             report.Check("same-integrity-window", !exclusions.IsAboveOwnIntegrity(handle));
             var lowHelper = session.StartExecutable(Environment.ProcessPath!, "--low-integrity-probe " + handle.ToInt64());
             report.Check("higher-integrity-gate", lowHelper.WaitForExit(15000) && lowHelper.ExitCode == 0,
@@ -119,8 +120,46 @@ internal static class DesktopChecks
             report.Check("component-dictionaries-loaded", !loaded.Errors.Any());
             if (layouts.EnLayout != IntPtr.Zero && layouts.UkLayout != IntPtr.Zero)
             {
+                IntPtr threaded = (IntPtr)initial.RootElement.GetProperty("threaded").GetInt64();
+                Focus(host, handle, "Focus threaded text", threaded);
+                uint frameThread = Native.GetWindowThreadProcessId(handle, out _), editThread = Native.GetWindowThreadProcessId(threaded, out _);
+                report.Check("focus-is-on-different-thread", threaded != IntPtr.Zero && frameThread != editThread);
+                // Send the setup request straight to the edit, independently of the code under test.
+                IntPtr frameLayout = Native.GetKeyboardLayout(frameThread);
+                IntPtr different = frameLayout == layouts.UkLayout ? layouts.EnLayout : layouts.UkLayout;
+                Native.PostMessage(threaded, 0x0050, (IntPtr)1, different);
+                Uia.Until(() => Native.GetKeyboardLayout(editThread) == different, "Threaded edit did not accept its layout.");
+                var input = FocusedInput.Capture();
+                report.Check("layout-read-from-focused-thread", input.ThreadId == editThread && KeyTranslator.GetForegroundLayout() == different && Native.GetKeyboardLayout(frameThread) != different,
+                    $"frame thread={frameThread} HKL={Native.GetKeyboardLayout(frameThread):X}; edit thread={editThread} HKL={different:X}; resolved={input.ThreadId}/{input.Layout:X}");
+                layouts.Activate(frameLayout);
+                Uia.Until(() => Native.GetKeyboardLayout(editThread) == frameLayout, "Layout switch did not reach the child thread.");
+                report.Pass("layout-write-to-focused-thread");
+                var savedInput = FocusedInput.Capture();
+                Focus(host, handle, "Focus WPF text");
+                report.Check("tray-layout-snapshot", savedInput.RequestLayout(different));
+                Uia.Until(() => Native.GetKeyboardLayout(editThread) == different, "Cached tray target lost the child thread.");
+                Focus(host, handle, "Focus threaded text", threaded);
+                FeedbackChecks.Run(host, handle, nativePassword, threaded, layouts, report);
+
                 cfg.Languages.Enabled = ["en", "uk"];
-                var bridge = new InputBridge(handle, wpf, loaded.Dictionaries, cfg, layouts);
+                using var verification = new SelectionService(exclusions, () => 0);
+                var child = AutomationElement.FromHandle(threaded);
+                var childBridge = new InputBridge(handle, child, loaded.Dictionaries, cfg, layouts);
+                Uia.SetValue(child, ""); Focus(host, handle, "Focus threaded text", threaded);
+                childBridge.Start(layouts.EnLayout);
+                childBridge.Type("ghbdsn ");
+                report.Check("threaded-auto-layout", Uia.Value(child) == "привіт " && Native.GetKeyboardLayout(editThread) == layouts.UkLayout);
+                childBridge.Type("fuhec ufyjr uelpbr ");
+                report.Check("threaded-uk-spelling", Uia.Value(child) == "привіт аґрус ґанок ґудзик ", Uia.Value(child));
+                var childRange = ((TextPattern)child.GetCurrentPattern(TextPattern.Pattern)).DocumentRange;
+                childRange.Select();
+                var selected = verification.CaptureAsync(exclusions.CaptureTarget()).GetAwaiter().GetResult();
+                string converted = SelectionText.ConvertLayout(selected.Text, LayoutTarget.En, LanguageProfile.FromLayout(KeyTranslator.GetForegroundLayout()));
+                var selectionChanged = verification.ReplaceAsync(selected, converted, layouts.EnLayout).GetAwaiter().GetResult();
+                Uia.Until(() => Native.GetKeyboardLayout(editThread) == layouts.EnLayout, "Selection did not change the input thread's layout.");
+                report.Check("threaded-selection-layout", selectionChanged && converted.StartsWith("ghbdsn ", StringComparison.Ordinal) && Uia.Value(child) == converted);
+                var bridge = new InputBridge(handle, wpf, loaded.Dictionaries, cfg, layouts, verification);
                 Uia.SetValue(wpf, ""); Focus(host, handle, "Focus WPF text");
                 bridge.Start(layouts.EnLayout);
                 bridge.Type("ghbdsn ");
@@ -131,6 +170,19 @@ internal static class DesktopChecks
                 report.Check("component-native-redo", Uia.Value(wpf) == "привіт " && KeyTranslator.GetForegroundLayout() == layouts.UkLayout);
                 bridge.Press(0x13, shift: true);
                 report.Check("component-native-case", Uia.Value(wpf) == "ПРИВІТ ");
+                bridge = new InputBridge(handle, wpf, loaded.Dictionaries, cfg, layouts, verification);
+                Uia.SetValue(wpf, ""); Focus(host, handle, "Focus WPF text"); bridge.Start(layouts.EnLayout);
+                bridge.Type("SQL-pfgbn ");
+                report.Check("component-native-compound-uk", Uia.Value(wpf) == "SQL-запит " && KeyTranslator.GetForegroundLayout() == layouts.UkLayout);
+                bridge.Type("vbh"); bridge.Undo();
+                Uia.Until(() => Uia.Value(wpf) == "SQL-pfgbn мир", "Delayed undo did not preserve the Ukrainian suffix.");
+                report.Check("component-native-delayed-undo", KeyTranslator.GetForegroundLayout() == layouts.UkLayout);
+                bridge.Type("f");
+                report.Check("component-native-continue-after-undo", Uia.Value(wpf) == "SQL-pfgbn мира");
+                Uia.SetValue(wpf, ""); Focus(host, handle, "Focus WPF text"); bridge.Start(layouts.UkLayout);
+                bridge.Type("1.5.3 ");
+                report.Check("component-native-numeric-dots-uk", Uia.Value(wpf) == "1.5.3 " && KeyTranslator.GetForegroundLayout() == layouts.UkLayout);
+                bridge = new InputBridge(handle, wpf, loaded.Dictionaries, cfg, layouts);
                 Uia.SetValue(wpf, ""); Focus(host, handle, "Focus WPF text");
                 bridge.Start(layouts.EnLayout);
                 bridge.Type("g`znm ");
@@ -221,9 +273,10 @@ internal sealed class InputBridge
     private readonly LayoutSwitcher _layouts;
     private readonly InputProcessor _processor;
     private bool _shift;
+    private KeyModifiers _chord;
     private string _expected = "";
 
-    public InputBridge(IntPtr window, AutomationElement editor, Dictionaries dictionary, AppConfig cfg, LayoutSwitcher layouts)
+    public InputBridge(IntPtr window, AutomationElement editor, Dictionaries dictionary, AppConfig cfg, LayoutSwitcher layouts, SelectionService? verification = null)
     {
         _window = window; _editor = editor; _layouts = layouts;
         var analyzer = new Analyzer(dictionary, cfg) { LayoutDetectionEnabled = true, AvailableLayouts = layouts.Available };
@@ -232,9 +285,11 @@ internal sealed class InputBridge
             RuLayout = layouts.RuLayout, EnLayout = layouts.EnLayout, UkLayout = layouts.UkLayout,
             CurrentLayout = KeyTranslator.GetForegroundLayout,
             TranslateLive = (vk, scan, hkl) => KeyTranslator.TranslateLayout(vk, scan, hkl, _shift, false, false),
-            Modifiers = () => (_shift, false), AltGrHeld = () => false, CommandChordHeld = () => false,
+            Modifiers = () => (_shift, false), AltGrHeld = () => false, CommandChordHeld = () => _chord != 0,
+            ShortcutModifiers = () => _chord | (_shift ? KeyModifiers.Shift : 0),
             WindowsKeyHeld = () => false
         };
+        if (verification != null) _processor.VerifyUndoText = verification.MatchesBeforeCaretAsync;
         _processor.ReplacementRequested += r => Apply(r.Backspaces, r.Text, r.TargetHkl, r.TrailingVk);
         _processor.ToggleRequested += r => Apply(r.Backspaces, r.Text, r.ActivateHkl, r.TrailingVk);
     }
@@ -276,6 +331,16 @@ internal sealed class InputBridge
             }
         }
         Uia.Until(() => Uia.Value(_editor) == _expected, $"Input bridge expected '{_expected}', actual '{Uia.Value(_editor)}'.");
+        _processor.OnKey(null, new KeyboardHook.KeyArgs { VkCode = vk, ScanCode = scan, IsKeyDown = false });
+    }
+
+    public void Undo()
+    {
+        void Key(uint vk, bool down) => _processor.OnKey(null, new KeyboardHook.KeyArgs { VkCode = vk, IsKeyDown = down });
+        _chord = KeyModifiers.Control | KeyModifiers.Alt;
+        Key(0xA2, true); Key(0xA4, true); Press('Z');
+        _chord = KeyModifiers.Alt; Key(0xA2, false);
+        _chord = KeyModifiers.None; Key(0xA4, false);
     }
 
     private void Apply(int backspaces, string text, IntPtr layout, int trailing)

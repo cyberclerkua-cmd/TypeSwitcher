@@ -82,6 +82,50 @@ public sealed class UkrainianTests(TestEnvironment env)
     }
 
     [Fact]
+    public void UkrainianGCorrectionsUseTheKeyboardPipelineAndCanBeUndone()
+    {
+        var keyboard = new SelfTest.FakeKeyboard(Analyzer("en", "ru", "uk")) { Current = SelfTest.FakeKeyboard.Uk };
+        keyboard.Type("fuhec ufyjr uelpbr "); // агрус ганок гудзик
+        Assert.Equal("аґрус ґанок ґудзик ", keyboard.Screen);
+        keyboard.Press(0x13, false);
+        Assert.Equal("аґрус ґанок гудзик ", keyboard.Screen);
+        Assert.Equal(SelfTest.FakeKeyboard.Uk, keyboard.Current);
+    }
+
+    [Fact]
+    public void LateNativeCaretUpdateDoesNotTruncateTheNextUkrainianWord()
+    {
+        var keyboard = new SelfTest.FakeKeyboard(Analyzer("en", "uk"));
+        int left = 0;
+        keyboard.Processor.TargetReader = () => new(keyboard.Window, 2, Caret: 3, CaretLeft: left);
+        keyboard.Type("ghbdsn ");
+        foreach (char key in "fuhec ufyjr ")
+        {
+            keyboard.Type(key.ToString());
+            left = keyboard.Screen.Length; // the native editor reports its new caret after key-up
+        }
+        Assert.Equal("привіт аґрус ґанок ", keyboard.Screen);
+    }
+
+    [Fact]
+    public void MultipleDictionaryGPositionsAndPersonalExceptionsAreNeverGuessed()
+    {
+        using var files = new TestDirectory();
+        var dictionary = new Dictionaries();
+        dictionary.LoadExtraWords(LayoutTarget.Uk, files.Write("words.txt", "аґага\nагаґа\nґанок\nаґрус\nґудзик\n"));
+        dictionary.LoadUserTexts(new Dictionary<(string, string), string> {
+            [("stopwords", "global")] = "ганок", [("my_words", "uk")] = "агрус", [("rules", "uk")] = "гудзик = застібка" });
+        var config = new AppConfig(); config.Languages.Enabled = ["uk"];
+        var analyzer = new Analyzer(dictionary, config);
+        foreach (string word in new[] { "агага", "ганок", "агрус" }) Assert.Equal(ActionKind.None, analyzer.Analyze(word, LayoutTarget.Uk).Kind);
+        Assert.Equal("застібка", analyzer.Analyze("гудзик", LayoutTarget.Uk).Replacement);
+        dictionary.LoadUserTexts(new Dictionary<(string, string), string>());
+        config.Typo.Enabled = false;
+        Assert.Equal(ActionKind.None, analyzer.Analyze("ганок", LayoutTarget.Uk).Kind);
+        Assert.Equal(ActionKind.None, analyzer.Analyze("ГАНОК", LayoutTarget.Ru).Kind);
+    }
+
+    [Fact]
     public void ThreeLanguagesDoNotGuessAmbiguousTarget()
     {
         var decision = Analyzer("en", "ru", "uk").Analyze("vfvf", LayoutTarget.En);

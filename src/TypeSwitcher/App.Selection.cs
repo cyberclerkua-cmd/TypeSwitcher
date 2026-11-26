@@ -23,7 +23,9 @@ public partial class App
             _selectionService ??= new(_exclusions, () => _processor.Revision);
             var selected = await _selectionService.CaptureAsync(target, cancellation);
             if (cancellation.IsCancellationRequested || !_cfg.General.Enabled) return;
-            var active = LanguageProfile.FromLayout(KeyTranslator.GetForegroundLayout());
+            var input = FocusedInput.Capture();
+            if (input.Window != target.Window || input.Receiver != target.Control) return;
+            var active = LanguageProfile.FromLayout(input.Layout);
             var choices = new List<SelectionChoice>();
             bool preview = false;
             switch (command)

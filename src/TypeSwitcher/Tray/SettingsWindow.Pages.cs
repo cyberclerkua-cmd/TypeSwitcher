@@ -188,6 +188,7 @@ public sealed partial class SettingsWindow
         "ambiguous-layout" => "Неоднозначная раскладка", "layout-rule-keep" => "Правило запрещает переключение", "layout-rule-unavailable" => "Целевая раскладка правила недоступна",
         "layout-rule" => "Правило раскладки", "context-layout" => "Контекст разрешил неоднозначность", "early-prefix" => "Уверенный префикс другой раскладки",
         "dictionary-layout" or "raw-layout" => "Словарь подтвердил другую раскладку", "domain-layout" => "Домен или имя файла",
+        "hyphenated-layout" => "Раскладка части слова с дефисом", "numeric-dots" => "Точки в числе",
         "layout-and-spelling" => "Раскладка и опечатка", "spelling" => "Словарное исправление опечатки", "case" => "Исправление регистра",
         "mixed-script" => "Смешанные алфавиты", "rule" => "Пользовательская замена", _ => "Автоматическая замена не требуется"
     };

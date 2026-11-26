@@ -64,8 +64,31 @@ public sealed partial class InputProcessor
         if (e.IsKeyDown && _pendingCommand != null && !_repeat) _pendingCommand = null;
 
         var target = ReadTarget();
-        if (_lastField is { } previous && !previous.SameField(target)) { ResetWordState(); _observedLayout = IntPtr.Zero; }
+        if (_lastField is { } previous && !previous.SameField(target))
+        {
+            ResetWordState();
+            _observedLayout = IntPtr.Zero;
+            _expectedLayout = IntPtr.Zero;
+        }
+        if (_toggle is { Tail.Length: > 0 } correction)
+        {
+            if (correction.TailCaret is { } caret && !caret.Matches(target))
+            {
+                // An editor on another thread can publish its text before its caret moves.
+                // An unconfirmed position disarms delayed undo, but must not split the next word.
+                if (correction.TailCaretPending) _toggle = null;
+                else ResetWordState();
+            }
+            else if (Milliseconds() - correction.CompletedAt > UndoTailLifetimeMs)
+                _toggle = null;
+            else if (!e.IsKeyDown && !IsModifier(e.VkCode) && correction.TailKeyRevision == Revision)
+            {
+                correction.TailCaretPending = target.Caret != IntPtr.Zero && _lastField is { } before && before.Matches(target);
+                correction.TailCaret = target;
+            }
+        }
         _lastField = target;
+        if (!e.IsKeyDown) ObserveExpectedLayout();
         if (e.IsKeyDown && !IsModifier(e.VkCode)) Revision++;
 
         if (Enabled && e.VkCode is 0xA0 or 0xA1 or 0xA2 or 0xA3
@@ -110,6 +133,7 @@ public sealed partial class InputProcessor
         var matched = Hotkeys.Bindings.FirstOrDefault(b => b.Command != InputCommand.ToggleEnabled && b.Chord.Matches(e.VkCode, _eventModifiers));
         if (matched.Chord == null) return false;
         if (_exclusions != null && _exclusions.IsPasswordThorough()) { ResetWordState(); return true; }
+        if (matched.Command is not (InputCommand.Undo or InputCommand.ConvertWord)) _toggle = null;
         if (_repeat) { e.Suppress = true; return true; }
         if ((_eventModifiers & (KeyModifiers.Control | KeyModifiers.Alt | KeyModifiers.Windows)) != 0)
         {
@@ -123,11 +147,11 @@ public sealed partial class InputProcessor
 
     private bool ExecuteCommand(InputCommand command)
     {
-        if (!Enabled || _exclusions != null && (_exclusions.IsBlacklistedApp(ForegroundWindow()) || _exclusions.IsAboveOwnIntegrity(ForegroundWindow()) || _exclusions.IsPasswordThorough())) return false;
+        if (!Enabled || _exclusions != null && (_exclusions.IsExcludedTarget(ReadTarget()) || _exclusions.IsPasswordThorough())) return false;
         switch (command)
         {
             case InputCommand.ConvertWord: return TryToggle() || TrySegmentRemap() || TryForceLayout();
-            case InputCommand.Undo: return TryToggle();
+            case InputCommand.Undo: return TryUndo();
             case InputCommand.ChangeCase: return TryChangeCase();
             case InputCommand.WordActions: return TrySuggest();
             case InputCommand.SelectionLayout:
@@ -145,7 +169,7 @@ public sealed partial class InputProcessor
     {
         IntPtr current = CurrentLayout();
         if (!SameLang(current, previous)) { ObserveLayout(current); return; }
-        if (_exclusions != null && (_exclusions.IsBlacklistedApp(ForegroundWindow()) || _exclusions.IsAboveOwnIntegrity(ForegroundWindow()) || _exclusions.IsPasswordThorough())) return;
+        if (_exclusions != null && (_exclusions.IsExcludedTarget(ReadTarget()) || _exclusions.IsPasswordThorough())) return;
         IntPtr target = NextLayout(current);
         if (target == IntPtr.Zero) return;
         ResetWordState();
@@ -175,6 +199,16 @@ public sealed partial class InputProcessor
         _expectedLayoutUntil = Milliseconds() + 1500;
     }
 
+    // Windows applies our language request asynchronously. Observe the acknowledgement even
+    // during a typing pause, before it could be mistaken for a later manual layout change.
+    private void ObserveExpectedLayout()
+    {
+        if (_expectedLayout == IntPtr.Zero) return;
+        if (Milliseconds() > _expectedLayoutUntil) { _expectedLayout = IntPtr.Zero; return; }
+        IntPtr current = CurrentLayout();
+        if (SameLang(current, _expectedLayout)) { _observedLayout = current; _expectedLayout = IntPtr.Zero; }
+    }
+
     public bool CanApply(InputTarget? target, long revision) => Enabled && (revision == 0 || revision == Revision)
         && (target == null || target.Value.Matches(ReadTarget()));
 
@@ -192,11 +226,14 @@ public sealed partial class InputProcessor
     private void SendToggle(ToggleRequest request)
     {
         var captured = request with { Target = ReadTarget(), Revision = Revision };
-        Post(() =>
-        {
-            if (!CanApply(captured.Target, captured.Revision)) { ResetWordState(); return; }
-            NoteOwnLayout(captured.ActivateHkl);
-            ToggleRequested?.Invoke(captured);
-        });
+        Post(() => ApplyToggle(captured));
+    }
+
+    private bool ApplyToggle(ToggleRequest request)
+    {
+        if (!CanApply(request.Target, request.Revision)) { ResetWordState(); return false; }
+        NoteOwnLayout(request.ActivateHkl);
+        ToggleRequested?.Invoke(request);
+        return Revision == request.Revision; // injection failure resets the processor
     }
 }

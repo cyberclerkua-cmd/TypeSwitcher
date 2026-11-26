@@ -87,10 +87,14 @@ public static class SelectionText
         var result = new StringBuilder();
         bool start = true;
         bool capitals = text.Any(char.IsLetter) && text.Where(char.IsLetter).All(char.IsUpper);
-        foreach (char c in text)
+        for (int i = 0; i < text.Length; i++)
         {
+            char c = text[i];
             char lower = char.ToLowerInvariant(c);
             string? mapped = table.GetValueOrDefault(lower);
+            // Ukrainian зг is zgh; ж alone is zh. Only adjacent letters form the pair.
+            if (language == LayoutTarget.Uk && lower == 'г' && i > 0 && char.ToLowerInvariant(text[i - 1]) == 'з')
+                mapped = c == 'Г' && text[i - 1] == 'З' ? "GH" : "gh";
             if (language == LayoutTarget.Uk && start)
                 mapped = lower switch { 'є' => "ye", 'ї' => "yi", 'й' => "y", 'ю' => "yu", 'я' => "ya", _ => mapped };
             if (LanguageProfile.IsApostrophe(c) && language == LayoutTarget.Uk) continue;
@@ -115,7 +119,7 @@ public static class SelectionText
         };
         if (language == LayoutTarget.Uk)
         {
-            map["h"] = "г"; map["g"] = "ґ"; map["i"] = "і"; map["y"] = "и";
+            map["zgh"] = "зг"; map["h"] = "г"; map["g"] = "ґ"; map["i"] = "і"; map["y"] = "и";
             map["ye"] = "є"; map["yi"] = "ї"; map["ie"] = "є"; map["iu"] = "ю"; map["ia"] = "я";
         }
         else { map["h"] = "х"; map["g"] = "г"; map["i"] = "и"; map["y"] = "ы"; map["yo"] = "ё"; map["ye"] = "е"; }

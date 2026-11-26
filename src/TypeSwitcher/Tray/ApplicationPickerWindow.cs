@@ -11,7 +11,7 @@ namespace TypeSwitcher.Tray;
 internal sealed class ApplicationPickerWindow : Window
 {
     public event Action<string>? Picked;
-    public ApplicationPickerWindow()
+    public ApplicationPickerWindow(bool useInputProcess = false)
     {
         Title = "TypeSwitcher"; Width = 440; Height = 430; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Theme.Attach(this);
@@ -24,7 +24,12 @@ internal sealed class ApplicationPickerWindow : Window
         {
             using (process)
             {
-                try { if (process.Id != Environment.ProcessId && process.MainWindowHandle != IntPtr.Zero) names.Add(process.ProcessName + ".exe"); }
+                try
+                {
+                    if (process.Id == Environment.ProcessId || process.MainWindowHandle == IntPtr.Zero) continue;
+                    string? name = useInputProcess ? FocusedInput.Read(process.MainWindowHandle).ApplicationName() : process.ProcessName + ".exe";
+                    if (name != null) names.Add(name);
+                }
                 catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { }
             }
         }
@@ -39,7 +44,7 @@ internal sealed class ApplicationPickerWindow : Window
 internal sealed class WindowPicker : Window
 {
     public event Action<string>? Picked;
-    public WindowPicker()
+    public WindowPicker(bool useInputProcess = false)
     {
         Title = "TypeSwitcher"; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.NoResize;
         AllowsTransparency = true; Background = new SolidColorBrush(Color.FromArgb(22, 0, 103, 192));
@@ -57,7 +62,8 @@ internal sealed class WindowPicker : Window
             Hide();
             IntPtr window = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(point), 2);
             NativeMethods.GetWindowThreadProcessId(window, out uint pid);
-            if (pid != Environment.ProcessId && ExclusionManager.ExecutableName(window) is { } name) Picked?.Invoke(name);
+            string? name = useInputProcess ? FocusedInput.Read(window).ApplicationName() : ExclusionManager.ExecutableName(window);
+            if (pid != Environment.ProcessId && name != null) Picked?.Invoke(name);
             Close();
         };
     }

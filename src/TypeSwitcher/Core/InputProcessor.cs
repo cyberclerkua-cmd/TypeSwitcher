@@ -74,6 +74,11 @@ public sealed partial class InputProcessor
         public bool ShowingCorrected;        // текущий видимый вариант
         public bool Counted;                 // откат по этому исправлению уже учтён
         public bool InProgress;
+        public long CompletedAt;
+        public string Tail = "";             // subsequent printable keys, only for the dedicated undo command
+        public InputTarget? TailCaret;
+        public bool TailCaretPending;
+        public long TailKeyRevision;
 
         // Длина "следа" границы в символах (для backspace при переключении).
         public int SepFootprint => Separator.Length + (SepVk != 0 ? 1 : 0);
@@ -118,6 +123,7 @@ public sealed partial class InputProcessor
     private readonly record struct SegKey(uint Vk, uint Scan, bool Shift, bool Caps, bool AltGr);
     private readonly List<SegKey> _segment = new();
     private IntPtr _segHkl = IntPtr.Zero;
+    private bool _segmentHasHyphen, _segmentHasNumericDot;
 
     // Пользователь вручную переложил сырой сегмент по хоткею (Pause) до пробела.
     // Тогда авто-детект раскладки на границе НЕ должен переопределять его выбор
@@ -176,6 +182,7 @@ public sealed partial class InputProcessor
     // Исключения (опционально): чёрный список приложений и поля паролей.
     private readonly Interop.ExclusionManager? _exclusions;
     private IntPtr _lastForeground = IntPtr.Zero;
+    private IntPtr _lastControl;
     private bool _foregroundExcluded;
 
     /// <summary>Пропускать поля паролей (применяется на лету из настроек).</summary>
@@ -227,6 +234,7 @@ public sealed partial class InputProcessor
         ResetSegment();
         ResetForce();
         ResetCase();
+        _toggle = null;
         _toggleAvailable = false;
         _recentCorrectedOriginal = null;
     }
@@ -243,19 +251,6 @@ public sealed partial class InputProcessor
 
     // Чёрный список или процесс с уровнем целостности выше нашего: UIPI не пропустит
     // туда SendInput, а подавленную границу вернуть будет уже нечем.
-    private bool IsExcludedWindow(IntPtr fg)
-    {
-        if (_exclusions == null) return false;
-        if (_exclusions.IsOwnProcessWindow(fg)) return true; // редакторы настроек и захват хоткеев
-        if (_exclusions.IsBlacklistedApp(fg)) return true;
-        if (_exclusions.IsAboveOwnIntegrity(fg))
-        {
-            Log.Line("окно процесса с правами выше наших - автозамена отключена для него");
-            return true;
-        }
-        return false;
-    }
-
     private void ProcessKey(object? sender, KeyboardHook.KeyArgs e)
     {
         if (!PrepareKey(e)) return;
@@ -268,11 +263,12 @@ public sealed partial class InputProcessor
         // Смена активного окна - ДО хоткеев: буфер, сегмент, force и откат относятся
         // к прежнему окну, и Pause не должен впечатывать их в новое (Alt+Tab, Win+N,
         // переключение без клика мышью - хук мыши этого не видит).
-        IntPtr fg = ForegroundWindow();
-        if (fg != _lastForeground)
+        var field = _lastField!.Value; // captured by PrepareKey for this event
+        if (field.Window != _lastForeground || field.Control != _lastControl)
         {
-            _lastForeground = fg;
-            _foregroundExcluded = IsExcludedWindow(fg);
+            _lastForeground = field.Window;
+            _lastControl = field.Control;
+            _foregroundExcluded = _exclusions?.IsExcludedTarget(field) == true;
             ResetWordState();
         }
 
@@ -292,10 +288,7 @@ public sealed partial class InputProcessor
             return;
         }
 
-        // Любой другой ввод фиксирует ОТКАТ - его хоткей больше недоступен. А вот
-        // force (ручная перекладка завершённого слова) намеренно НЕ гасим здесь:
-        // он должен пережить хвост разделителей ("слово, " / "слово  "), иначе Pause
-        // после знака+пробела не срабатывает. Гасим force только в начале нового слова.
+        // Pause now targets the new word. Only the dedicated undo command may reach across it.
         _toggleAvailable = false;
 
         // Быстрый детект поля пароля (нативный ES_PASSWORD или флаг из событий фокуса
@@ -317,12 +310,19 @@ public sealed partial class InputProcessor
 
         if (e.VkCode == VK_BACK)
         {
+            _toggle = null;
             _liveEdit = null;
             _recentContext.Clear();
             if (_buffer.IsEmpty) ResetCase(); // стирают хвост завершённого слова
             _buffer.Backspace();
             _deletesSinceCorrection++;
             if (_segment.Count > 0) _segment.RemoveAt(_segment.Count - 1);
+            if (_segmentHasHyphen || _segmentHasNumericDot)
+            {
+                string remaining = Render(_segHkl);
+                _segmentHasHyphen = remaining.Contains('-');
+                _segmentHasNumericDot = remaining.Length != 0 && char.IsAsciiDigit(remaining[0]) && remaining.Contains('.');
+            }
             if (_segment.Count == 0) { _segHkl = IntPtr.Zero; _segmentManualLayout = false; }
             return;
         }
@@ -350,6 +350,7 @@ public sealed partial class InputProcessor
             return;
         }
         if (ch.Length != 1) { ResetWordState(); return; }
+        TrackUndoTail(ch[0]);
 
         bool internalApostrophe = ch.Length == 1 && LanguageProfile.IsApostrophe(ch[0]) && !_buffer.IsEmpty
             && sourceLanguage is LayoutTarget.Uk or LayoutTarget.En;
@@ -405,9 +406,7 @@ public sealed partial class InputProcessor
             if (isPassword)
             {
                 Log.Line("boundary: поле пароля (UIA) - пропуск");
-                ResetSegment();
-                ResetForce();
-                ResetCase();
+                ResetWordState();
                 return;
             }
         }
@@ -433,6 +432,9 @@ public sealed partial class InputProcessor
         else
         {
             RecordSeg(e.VkCode, e.ScanCode); // знак - часть набора
+            if (c0 == '-' && !_segmentOverflow) _segmentHasHyphen = true;
+            if (c0 == '.' && word.Length > 0 && char.IsAsciiDigit(word[0]) && sourceLanguage is LayoutTarget.Ru or LayoutTarget.Uk)
+                _segmentHasNumericDot = true;
         }
 
         if (word.Length == 0)
@@ -474,7 +476,11 @@ public sealed partial class InputProcessor
             }
         }
 
-        Decision decision = _manualWord ? Decision.None : AnalyzeCurrent(word, sourceLanguage);
+        // An internal sign may still be part of a word (rf,tkm → кабель) or a version.
+        // Wait for the full token, except for the user's existing text expansions.
+        Decision decision = Decision.None;
+        if (!_manualWord)
+            decision = isPunct && (_segmentHasHyphen || _segmentHasNumericDot) ? _analyzer.MatchRule(word, sourceLanguage) : AnalyzeCurrent(word, sourceLanguage);
 
         // Однобуквенное правило на границе-ЗНАКЕ не применяем: одиночная буква - префикс
         // многих слов, а знак может быть знаком-буквой, продолжающей слово. 'вэб' на EN =
@@ -586,7 +592,35 @@ public sealed partial class InputProcessor
             return true;
         }
         if (layoutRule.Reason is "layout-rule-keep" or "layout-rule-unavailable") { KeepRaw(); return true; }
+        if (raw.Contains('-') && !Analyzer.IsHyphenated(raw)) { KeepRaw(); return true; } // flag, leading or unfinished hyphen
+        if (Analyzer.IsHyphenated(raw))
+        {
+            var readings = OtherLayouts(sourceHkl).Select(hkl => (LanguageProfile.FromLayout(hkl), RenderSeg(keys, hkl)));
+            var compound = _analyzer.AnalyzeHyphenated(raw, source, readings);
+            if (compound.Kind != ActionKind.None)
+            {
+                _lastWord = raw; _lastWordLanguage = source;
+                EmitCorrection(e, raw, compound, separator, separatorVk);
+            }
+            else if (compound.Reason is not ("ambiguous-layout" or "known-word") && word.Length != 0 && raw.EndsWith(word, StringComparison.Ordinal))
+            {
+                var suffix = AnalyzeCurrent(word, source);
+                if (suffix.Kind is ActionKind.Rule or ActionKind.Typo && suffix.Reason != "numeric-dots")
+                    EmitCorrection(e, word, suffix, separator, separatorVk);
+                else KeepRaw();
+            }
+            else KeepRaw();
+            return true; // never remap a compound by dragging an unconfirmed part along
+        }
         if (raw == word) return false;
+
+        if (source is LayoutTarget.Ru or LayoutTarget.Uk && char.IsAsciiDigit(raw[0]) && raw.Contains('ю') && raw.Contains('.'))
+        {
+            var dots = _analyzer.NumericDots(raw, source);
+            if (dots.Kind != ActionKind.None) EmitCorrection(e, raw, dots, separator, separatorVk);
+            else KeepRaw(); // do not fix a suffix of a malformed dotted number
+            return true;
+        }
 
         var candidates = new List<Decision>();
         foreach (IntPtr targetHkl in OtherLayouts(sourceHkl))
@@ -636,7 +670,8 @@ public sealed partial class InputProcessor
             OriginalHkl = originalHkl,
             CorrectedHkl = LayoutFor(target),
             OriginalSeparator = originalSeparator ?? sepText,
-            ShowingCorrected = true
+            ShowingCorrected = true,
+            CompletedAt = Milliseconds()
         };
         _toggleAvailable = true;
         _recentCorrectedOriginal = original;
@@ -667,11 +702,7 @@ public sealed partial class InputProcessor
                 TrailingVk: t.SepVk,
                 Window: _lastForeground,
                 ActivateHkl: t.Kind == ActionKind.Layout ? t.OriginalHkl : IntPtr.Zero);
-            if (!t.Counted)
-            {
-                t.Counted = true;
-                WordRejected?.Invoke(new(t.Original.ToLowerInvariant(), LanguageProfile.FromLayout(t.OriginalHkl)));
-            }
+            RejectOnce(t);
         }
         else
         {
@@ -699,6 +730,13 @@ public sealed partial class InputProcessor
 
         SendToggle(req);
         return true;
+    }
+
+    private void RejectOnce(ToggleState correction)
+    {
+        if (correction.Counted) return;
+        correction.Counted = true;
+        WordRejected?.Invoke(new(correction.Original.ToLowerInvariant(), LanguageProfile.FromLayout(correction.OriginalHkl)));
     }
 
     private void ArmForce(string word, string sep, int sepVk, List<SegKey> segSnapshot, IntPtr segHkl)
@@ -804,6 +842,7 @@ public sealed partial class InputProcessor
     /// <summary>Сбросить текущий набор (буфер слова + сырой сегмент), force не трогать.</summary>
     private void ResetTyping()
     {
+        _toggle = null;
         ResetAdvancedState();
         _buffer.Reset();
         ResetSegment();
@@ -813,6 +852,8 @@ public sealed partial class InputProcessor
     {
         _segment.Clear();
         _segHkl = IntPtr.Zero;
+        _segmentHasHyphen = false;
+        _segmentHasNumericDot = false;
         _segmentManualLayout = false;
         _segmentOverflow = false;
     }
@@ -1100,6 +1141,7 @@ public sealed partial class InputProcessor
 
     private void EmitForce(int backspaces, string text, LayoutTarget target, int trailingVk)
     {
+        _toggle = null;
         Log.Line($"force-layout: -{backspaces} +'{text}' ({target}) vk={trailingVk}");
         var req = new ToggleRequest(backspaces, text, target, trailingVk, _lastForeground, LayoutFor(target));
         SendToggle(req);

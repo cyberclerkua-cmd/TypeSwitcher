@@ -48,6 +48,14 @@ public sealed class AppConfig
             .Where(id => Core.LanguageProfile.Find(id) != null).Select(id => id.ToLowerInvariant()).Distinct().ToList();
         Languages.Order = (Languages.Order ?? d.Languages.Order).Concat(d.Languages.Order)
             .Where(id => Core.LanguageProfile.Find(id) != null).Select(id => id.ToLowerInvariant()).Distinct().ToList();
+        var applications = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, id) in Languages.ApplicationLayouts ?? [])
+        {
+            string exe = name.Trim();
+            if (exe.Length > 4 && exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && exe.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) < 0
+                && Core.LanguageProfile.Find(id?.Trim()) is { } profile) applications[exe] = profile.Id;
+        }
+        Languages.ApplicationLayouts = applications;
         General ??= d.General;
         Typo ??= d.Typo;
         Layout ??= d.Layout;
@@ -140,6 +148,8 @@ public sealed class AppConfig
     {
         public List<string> Enabled { get; set; } = new() { "en", "ru" };
         public List<string> Order { get; set; } = new() { "en", "ru", "uk" };
+        public bool UseApplicationLayouts { get; set; }
+        public Dictionary<string, string> ApplicationLayouts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     public sealed class DictionaryEntry
@@ -256,6 +266,7 @@ public sealed class AppConfig
     public sealed class TrayCfg
     {
         public bool ShowLayoutIndicator { get; set; }
+        public bool ShowCaretIndicator { get; set; }
         public bool BlinkOnAction { get; set; } = true;
         public int BlinkMs { get; set; } = 200;
         public string IconIdle { get; set; } = "assets/typeswitcher.png";

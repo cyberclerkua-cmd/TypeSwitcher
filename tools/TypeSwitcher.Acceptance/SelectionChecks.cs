@@ -30,6 +30,14 @@ internal static class SelectionChecks
             void Replace(SelectionService.Snapshot selected, string replacement)
                 => service.ReplaceAsync(selected, replacement, IntPtr.Zero).GetAwaiter().GetResult();
 
+            bool MatchesUndoText(string expected) => service.MatchesBeforeCaretAsync(exclusions.CaptureTarget(), expected).GetAwaiter().GetResult();
+            SelectText("prefix привет мир");
+            report.Check("undo-rejects-selection", !MatchesUndoText("привет мир"));
+            Uia.Click(window, "Focus WPF text"); // the fixture puts the caret at the end
+            Uia.Until(() => text.Current.HasKeyboardFocus, "Text field did not regain focus.");
+            report.Check("undo-matches-only-before-caret", MatchesUndoText("привет мир"));
+            report.Check("undo-rejects-changed-suffix", !MatchesUndoText("привет миг"));
+
             SelectText("ghbdtn vbh");
             uint clipboard = Native.GetClipboardSequenceNumber();
             var selected = Capture();
@@ -44,9 +52,9 @@ internal static class SelectionChecks
             Uia.Until(() => Uia.Value(text) == "ПРИВЕТ МИР", "Selection case replacement failed.");
             report.Pass("selection-case-write");
 
-            SelectText("Київ"); selected = Capture();
+            SelectText("Київ, Згурський, жито"); selected = Capture();
             Replace(selected, SelectionText.Transliterate(selected.Text, LayoutTarget.Uk));
-            Uia.Until(() => Uia.Value(text) == "Kyiv", "Ukrainian transliteration failed.");
+            Uia.Until(() => Uia.Value(text) == "Kyiv, Zghurskyi, zhyto", "Ukrainian transliteration failed.");
             report.Pass("selection-uk-transliteration");
 
             SelectText("привет vbh!"); selected = Capture();
@@ -64,6 +72,7 @@ internal static class SelectionChecks
             refused = false;
             try { _ = Capture(); } catch (SelectionUnavailableException) { refused = true; }
             report.Check("selection-password-refused", refused);
+            report.Check("undo-password-refused", !MatchesUndoText("private"));
 
             SelectText("unchanged");
             exclusions.SetBlacklist(["TypeSwitcher.Acceptance.exe"]);

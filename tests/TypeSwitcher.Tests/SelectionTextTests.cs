@@ -30,6 +30,11 @@ public sealed class SelectionTextTests
     [InlineData("Київ", LayoutTarget.Uk, "Kyiv")]
     [InlineData("Євген", LayoutTarget.Uk, "Yevhen")]
     [InlineData("Ґанок", LayoutTarget.Uk, "Ganok")]
+    [InlineData("Згорани, Згурський, розгін", LayoutTarget.Uk, "Zghorany, Zghurskyi, rozghin")]
+    [InlineData("ЗГОРАНИ", LayoutTarget.Uk, "ZGHORANY")]
+    [InlineData("з г, з-г, з’г, ж", LayoutTarget.Uk, "z h, z-h, zh, zh")]
+    [InlineData("Zghorany ZGH zh", LayoutTarget.Uk, "Згорани ЗГ ж")]
+    [InlineData("разгар жгут", LayoutTarget.Ru, "razgar zhgut")]
     [InlineData("Shchuka", LayoutTarget.Ru, "Щука")]
     public void TransliterationUsesTheSelectedLanguage(string input, LayoutTarget language, string expected)
         => Assert.Equal(expected, SelectionText.Transliterate(input, language));

@@ -84,6 +84,16 @@ public sealed partial class Analyzer
 
         if (!keepLayout && LayoutDetectionEnabled && _cfg.Layout.Enabled)
         {
+            if (word.Length <= 64)
+            {
+                Decision dots = NumericDots(word, source);
+                if (dots.Kind != ActionKind.None) return dots;
+                if (IsHyphenated(word))
+                {
+                    return AnalyzeHyphenated(word, source, LanguageOrder.Where(t => t != source)
+                        .Select(t => (t, LayoutMap.MapBetween(word, source, t) ?? "")));
+                }
+            }
             Decision layout = DetectLayout(word, lower, source);
             if (layout.Kind != ActionKind.None || layout.Reason == "ambiguous-layout") return layout;
             if (_cfg.Layout.NormalizeMixedScript)
@@ -109,6 +119,19 @@ public sealed partial class Analyzer
     private bool CanSwitchTo(LayoutTarget target) => LayoutDetectionEnabled && _cfg.Layout.Enabled && IsLanguageEnabled(target)
         && _dict.IsLoaded(target) && (AvailableLayouts == null || AvailableLayouts.Contains(target));
 
+    // A version, IPv4 address or list number. A final dot is allowed; adjacent dots are not.
+    internal Decision NumericDots(string word, LayoutTarget source)
+    {
+        if (source is not (LayoutTarget.Ru or LayoutTarget.Uk) || word.Length is 0 or > 64 || !char.IsAsciiDigit(word[0]) ||
+            !word.Contains('ю') || !LayoutDetectionEnabled || !_cfg.Layout.Enabled || !IsLanguageEnabled(source)) return Decision.None;
+        for (int i = 1; i < word.Length; i++)
+        {
+            if (char.IsAsciiDigit(word[i])) continue;
+            if (word[i] is not ('ю' or '.') || !char.IsAsciiDigit(word[i - 1])) return Decision.None;
+        }
+        return new(ActionKind.Typo, word.Replace('ю', '.'), Source: source, Reason: "numeric-dots");
+    }
+
     /// <summary>Проверка уже отрендеренной гипотезы (сырой сегмент с пунктуацией).</summary>
     public bool IsLayoutSwap(string current, string targetText, LayoutTarget target, LayoutTarget source = LayoutTarget.None)
     {
@@ -119,6 +142,57 @@ public sealed partial class Analyzer
         var rule = LayoutRule.Find(_cfg.Layout.Rules, current, source);
         if (rule != null && (rule.Action == "keep" || rule.Target != LanguageProfile.Find(target)?.Id)) return false;
         return _dict.IsValid(target, targetText.ToLowerInvariant()) && !_dict.IsValid(source, current.ToLowerInvariant());
+    }
+
+    internal static bool IsHyphenated(string word) => word.Length > 2 && word[0] != '-' && word[^1] != '-' && word.Contains('-');
+
+    // A physical-key reading may turn punctuation inside a part into a letter (rf,tkm → кабель).
+    // Each part needs its own evidence: a confirmed neighbour cannot turn SQL into ЫЙД.
+    internal Decision AnalyzeHyphenated(string word, LayoutTarget source, IEnumerable<(LayoutTarget Target, string Text)> readings)
+    {
+        if (!IsLanguageEnabled(source)) return Decision.None;
+        if (_dict.IsValid(source, word)) return Keep(source, "known-word");
+        string[] parts = word.Split('-');
+        Decision result = Decision.None;
+        foreach (var (target, rendered) in readings)
+        {
+            if (!CanSwitchTo(target)) continue;
+            var candidate = MatchCompoundParts(parts, rendered, source, target);
+            if (candidate.Kind == ActionKind.None) continue;
+            if (result.Kind != ActionKind.None) return Keep(source, "ambiguous-layout");
+            result = candidate;
+        }
+        return result.Kind == ActionKind.None ? Keep(source, "low-confidence") : result;
+    }
+
+    private Decision MatchCompoundParts(string[] parts, string rendered, LayoutTarget source, LayoutTarget target)
+    {
+        string[] mapped = rendered.Split('-');
+        if (mapped.Length != parts.Length) return Decision.None;
+        var profile = LanguageProfile.Find(target)!;
+        bool confirmed = false, lastConverted = false;
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string part = parts[i];
+            if (part.Length == 0) return Decision.None;
+            if (IsProtected(part, source) || _dict.IsValid(source, part) || part.Length == 1 && char.IsAsciiLetterUpper(part[0]) ||
+                _cfg.Layout.ProtectTechnical && TokenClassifier.IsTechnical(part))
+            {
+                mapped[i] = part;
+                continue;
+            }
+            string reading = mapped[i];
+            var rule = LayoutRule.Find(_cfg.Layout.Rules, part, source);
+            if (!profile.IsWord(reading) || !_dict.IsValid(target, reading) ||
+                rule != null && (rule.Action == "keep" || rule.Target != profile.Id)) return Decision.None;
+            // A short dictionary match like «то» may follow «какой», but cannot trigger the correction alone.
+            if (reading.Length >= LayoutMinWordLength) confirmed = true;
+            lastConverted = i == parts.Length - 1;
+        }
+        if (!confirmed) return Decision.None;
+        string replacement = string.Join('-', mapped);
+        return new(lastConverted ? ActionKind.Layout : ActionKind.Typo, replacement,
+            lastConverted ? target : LayoutTarget.None, source, "hyphenated-layout");
     }
 
     private Decision DetectLayout(string word, string lower, LayoutTarget source)

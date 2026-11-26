@@ -15,12 +15,7 @@ public static class KeyTranslator
     private const int VK_CAPITAL = 0x14;  // CapsLock
 
     /// <summary>Раскладка клавиатуры окна, находящегося в фокусе.</summary>
-    public static IntPtr GetForegroundLayout()
-    {
-        IntPtr hwnd = GetForegroundWindow();
-        uint threadId = GetWindowThreadProcessId(hwnd, out _);
-        return GetKeyboardLayout(threadId);
-    }
+    public static IntPtr GetForegroundLayout() => FocusedInput.Capture().Layout;
 
     /// <summary>
     /// Переводит клавишу в символ в ЗАДАННОЙ раскладке с ЯВНЫМ состоянием

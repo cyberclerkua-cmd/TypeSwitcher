@@ -68,31 +68,13 @@ public sealed class ExclusionManager : IDisposable
     {
         var blacklist = _blacklist;
         if (blacklist.Count == 0 || foreground == IntPtr.Zero) return false;
-        try
-        {
-            GetWindowThreadProcessId(foreground, out uint pid);
-            if (pid == 0) return false;
-
-            IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-            if (h == IntPtr.Zero) return false;
-            try
-            {
-                var sb = new StringBuilder(1024);
-                int size = sb.Capacity;
-                if (!QueryFullProcessImageName(h, 0, sb, ref size)) return false;
-                string exe = System.IO.Path.GetFileName(sb.ToString());
-                return blacklist.Contains(exe);
-            }
-            finally
-            {
-                CloseHandle(h);
-            }
-        }
-        catch
-        {
-            return false;
-        }
+        return ExecutableName(foreground) is { } exe && blacklist.Contains(exe);
     }
+
+    internal bool IsExcludedWindow(IntPtr window) => IsOwnProcessWindow(window) || IsBlacklistedApp(window) || IsAboveOwnIntegrity(window);
+
+    internal bool IsExcludedTarget(InputTarget target) => IsExcludedWindow(target.Window)
+        || target.Control != IntPtr.Zero && target.Control != target.Window && IsExcludedWindow(target.Control);
 
     // --- уровень целостности (UIPI) ---
 
@@ -161,15 +143,32 @@ public sealed class ExclusionManager : IDisposable
     private sealed record FocusState(IntPtr Foreground, bool IsPassword);
     private volatile FocusState? _focusState;
     private long _focusVersion;
+    private long _feedbackRevision;
 
     public InputTarget CaptureTarget()
     {
-        IntPtr window = ForegroundWindow();
-        var info = new GUITHREADINFO { cbSize = Marshal.SizeOf<GUITHREADINFO>() };
-        uint thread = GetWindowThreadProcessId(window, out _);
-        if (thread != 0 && GetGUIThreadInfo(thread, ref info))
-            return new(window, info.hwndFocus, Volatile.Read(ref _focusVersion), info.hwndCaret, info.rcCaret.Left, info.rcCaret.Top);
-        return new(window, FocusedControl(), Volatile.Read(ref _focusVersion));
+        var input = FocusedInput.Read(ForegroundWindow());
+        return new(input.Window, input.Receiver, FocusVersion, input.Gui.hwndCaret, input.Gui.rcCaret.Left, input.Gui.rcCaret.Top);
+    }
+
+    internal long FocusVersion => Volatile.Read(ref _focusVersion);
+    internal long FeedbackRevision => Volatile.Read(ref _feedbackRevision);
+
+    // Separate from the hook-thread cache. The UI timer never needs the field's value.
+    private (InputTarget Field, long Revision)? _feedbackField;
+    private long _feedbackCheckedAt;
+    private bool _feedbackProtected;
+    internal bool IsProtectedFieldForFeedback(InputTarget field, long revision)
+    {
+        if (_feedbackField is { } cached && field.SameField(cached.Field) && revision == cached.Revision && Clock() - _feedbackCheckedAt < UiaTtlMs) return _feedbackProtected;
+        try
+        {
+            var element = AutomationElement.FocusedElement;
+            _feedbackProtected = element?.GetCurrentPropertyValue(AutomationElement.IsPasswordProperty, true) is not false;
+        }
+        catch (Exception ex) when (ex is COMException or ElementNotAvailableException or InvalidOperationException) { _feedbackProtected = true; }
+        _feedbackCheckedAt = Clock(); _feedbackField = (field, revision);
+        return _feedbackProtected;
     }
 
     public bool IsCurrentTarget(InputTarget target) => target.Matches(CaptureTarget());
@@ -246,7 +245,11 @@ public sealed class ExclusionManager : IDisposable
     /// Фокус мог уйти (Tab, Enter, клик мышью): следующий IsPasswordThorough спросит UIA
     /// заново, а не вернёт результат, относящийся к прежнему полю.
     /// </summary>
-    public void InvalidateFocusCache() => _uiaValid = false;
+    public void InvalidateFocusCache()
+    {
+        _uiaValid = false;
+        Interlocked.Increment(ref _feedbackRevision);
+    }
 
     /// <summary>Смена фокуса (из события UIA; открыт для самопроверки).</summary>
     public void ReportFocusChanged(IntPtr foreground, bool isPassword)
@@ -371,13 +374,5 @@ public sealed class ExclusionManager : IDisposable
         return pid == (uint)Environment.ProcessId;
     }
 
-    private static IntPtr GetFocusedControl()
-    {
-        var gti = new GUITHREADINFO();
-        gti.cbSize = Marshal.SizeOf<GUITHREADINFO>();
-        uint tid = GetWindowThreadProcessId(GetForegroundWindow(), out _);
-        if (tid == 0) return IntPtr.Zero;
-        if (!GetGUIThreadInfo(tid, ref gti)) return IntPtr.Zero;
-        return gti.hwndFocus;
-    }
+    private static IntPtr GetFocusedControl() => FocusedInput.Capture().Receiver;
 }
